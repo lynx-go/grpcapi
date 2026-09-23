@@ -1,0 +1,38 @@
+syntax = "proto3";
+
+// Package testvalidate.v1 是 validate 拦截器测试的 fixture 消息集：
+// 只服务于 interceptor 包的单测（生成码落在 interceptor/testdata/gen），
+// 不对外承诺任何 API 契约。
+package testvalidate.v1;
+
+import "buf/validate/validate.proto";
+
+option go_package = "github.com/lynx-go/grpcapi/interceptor/testdata/gen/testvalidate/v1;testvalidatev1";
+
+// EchoRequest 覆盖 string 长度、pattern、int32 范围三类规则违规。
+message EchoRequest {
+  string id = 1 [(buf.validate.field).string = {
+    min_len: 1,
+    max_len: 64
+  }];
+  string name = 2 [(buf.validate.field).string = {
+    pattern: "^[a-z]+$"
+  }];
+  int32 count = 3 [(buf.validate.field).int32 = {
+    gte: 0,
+    lte: 100
+  }];
+}
+
+// EchoResponse 空响应。
+message EchoResponse {}
+
+// BadCelRequest 的 CEL 表达式引用了未定义函数：编译期即失败，
+// 用于断言求值故障 fail-closed 映射 Internal。
+message BadCelRequest {
+  string note = 1 [(buf.validate.field).cel = {
+    id: "note.bad_cel",
+    message: "note must start with ok",
+    expression: "this.startsWith('ok') == bogusFunction()"
+  }];
+}

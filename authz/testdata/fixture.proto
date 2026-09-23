@@ -1,0 +1,132 @@
+syntax = "proto3";
+
+// fixture 是 authz.Build 的合法策略夹具：以真实 FileDescriptor 驱动收集器，
+// 覆盖 method_auth 优先、service_auth 回落、SERVER+scope（read/write/admin
+// 三方向）、PERMISSION+permissions、PUBLIC、流式方法（配 AllowStreaming）与
+// RequestFields 排序投影。故意违例的场景见 violations.proto，无 scope 声明面
+// 见 plain.proto。
+package grpcapi.authz.testdata.v1;
+
+import "grpcapi/v1/authz.proto";
+
+option go_package = "github.com/lynx-go/grpcapi/authz/testdata;testdata";
+
+// FixturePriorityService 验证优先级语义：service_auth 提供缺省档，
+// method_auth 逐方法覆盖。
+service FixturePriorityService {
+  option (grpcapi.v1.service_auth) = { default_access: ACCESS_LEVEL_END_USER };
+
+  // GetItem 用 method_auth 覆盖服务缺省档（END_USER → SERVER）。
+  rpc GetItem(GetItemRequest) returns (GetItemResponse) {
+    option (grpcapi.v1.method_auth) = {
+      access: ACCESS_LEVEL_SERVER
+      admin_roles: ["admin", "owner"]
+      api_key_scope: { resource: "databases" op: SCOPE_OP_READ }
+    };
+  }
+
+  // ListItems 不带 method_auth，回落 service_auth.default_access（END_USER；
+  // permissions 保持为空——归一化是项目策略，不进库）。
+  rpc ListItems(ListItemsRequest) returns (ListItemsResponse);
+}
+
+// FixtureServerService 全方法显式声明，覆盖 SERVER 面 scope 的
+// write / admin 方向与 admin_roles 透传。
+service FixtureServerService {
+  rpc CreateItem(CreateItemRequest) returns (CreateItemResponse) {
+    option (grpcapi.v1.method_auth) = {
+      access: ACCESS_LEVEL_SERVER
+      admin_roles: ["member", "admin", "owner"]
+      api_key_scope: { resource: "storage" op: SCOPE_OP_WRITE }
+    };
+  }
+
+  rpc DeleteItem(DeleteItemRequest) returns (DeleteItemResponse) {
+    option (grpcapi.v1.method_auth) = {
+      access: ACCESS_LEVEL_SERVER
+      admin_roles: ["admin", "owner"]
+      api_key_scope: { resource: "databases" op: SCOPE_OP_ADMIN }
+    };
+  }
+}
+
+// FixturePermissionService 覆盖 PERMISSION 面（permissions 原样透传）。
+service FixturePermissionService {
+  rpc PurgeItems(PurgeItemsRequest) returns (PurgeItemsResponse) {
+    option (grpcapi.v1.method_auth) = {
+      access: ACCESS_LEVEL_PERMISSION
+      permissions: ["owner"]
+    };
+  }
+}
+
+// FixturePublicService 覆盖 PUBLIC 面。
+service FixturePublicService {
+  rpc Ping(PingRequest) returns (PingResponse) {
+    option (grpcapi.v1.method_auth) = { access: ACCESS_LEVEL_PUBLIC };
+  }
+}
+
+// FixtureStreamService 覆盖流式方法（Build 默认拒绝，AllowStreaming 放行）。
+service FixtureStreamService {
+  rpc WatchItems(WatchItemsRequest) returns (stream WatchItemsResponse) {
+    option (grpcapi.v1.method_auth) = {
+      access: ACCESS_LEVEL_SERVER
+      api_key_scope: { resource: "databases" op: SCOPE_OP_READ }
+    };
+  }
+}
+
+message GetItemRequest {
+  string item_id = 1;
+}
+
+message GetItemResponse {
+  string item_id = 1;
+}
+
+message ListItemsRequest {
+  int32 page_size = 1;
+  string order_by = 2;
+}
+
+message ListItemsResponse {
+  repeated string item_ids = 1;
+}
+
+// CreateItemRequest 字段故意乱序声明：RequestFields 投影必须按字典序输出。
+message CreateItemRequest {
+  string tags = 3;
+  string item_id = 2;
+  string project_id = 1;
+}
+
+message CreateItemResponse {
+  string item_id = 1;
+}
+
+message DeleteItemRequest {
+  string item_id = 1;
+}
+
+message DeleteItemResponse {}
+
+message PurgeItemsRequest {
+  string confirm = 1;
+}
+
+message PurgeItemsResponse {}
+
+message PingRequest {}
+
+message PingResponse {
+  string pong = 1;
+}
+
+message WatchItemsRequest {
+  string filter = 1;
+}
+
+message WatchItemsResponse {
+  string item_id = 1;
+}

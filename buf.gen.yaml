@@ -1,0 +1,18 @@
+version: v2
+# 全 workspace 生成：file placement 完全由各 proto 的 go_package 经
+# protoc-gen-go / protoc-gen-go-grpc 的 module= 前缀裁剪决定——
+#   - proto 模块 authz.proto（go_package .../genproto/grpcapi/v1）
+#       → genproto/grpcapi/v1/authz.pb.go（发布 module，DESIGN.md §3）；
+#   - authz/testdata 夹具（go_package .../authz/testdata）
+#       → authz/testdata/*.pb.go（仅测试用）；
+#   - example（go_package .../example/echo/v1）
+#       → example/echo/v1/*.pb.go + *_grpc.pb.go（接入面活文档）。
+# 不要加 inputs: [directory: proto] 之类的限定——那会让夹具/example 静默漏生成；
+# go_package 前缀即路由，测试夹具不可能混入 genproto。
+plugins:
+  - remote: buf.build/protocolbuffers/go:v1.36.10
+    out: .
+    opt: module=github.com/lynx-go/grpcapi
+  - remote: buf.build/grpc/go:v1.6.0
+    out: .
+    opt: module=github.com/lynx-go/grpcapi

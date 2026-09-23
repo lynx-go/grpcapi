@@ -1,0 +1,34 @@
+syntax = "proto3";
+
+// plain 是无 scope 声明的夹具：验证「空词表 + 无 scope 声明」可正常构造
+// （词表断言的跳过支），并锁定 END_USER 面权限为空时保持透传、不归一化
+// （归一化是项目策略，经 Assertion 钩子注入，不进库）。
+package grpcapi.authz.testdata.v1;
+
+import "grpcapi/v1/authz.proto";
+
+option go_package = "github.com/lynx-go/grpcapi/authz/testdata;testdata";
+
+service PlainService {
+  rpc GetStatus(GetStatusRequest) returns (GetStatusResponse) {
+    option (grpcapi.v1.method_auth) = { access: ACCESS_LEVEL_PUBLIC };
+  }
+
+  // END_USER 且未声明 permissions：库内置断言不检查 END_USER 权限值域，
+  // 收集层也不补位归一化。
+  rpc GetMe(GetMeRequest) returns (GetMeResponse) {
+    option (grpcapi.v1.method_auth) = { access: ACCESS_LEVEL_END_USER };
+  }
+}
+
+message GetStatusRequest {}
+
+message GetStatusResponse {
+  string status = 1;
+}
+
+message GetMeRequest {}
+
+message GetMeResponse {
+  string user_id = 1;
+}

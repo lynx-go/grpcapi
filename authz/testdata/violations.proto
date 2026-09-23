@@ -1,0 +1,104 @@
+syntax = "proto3";
+
+// violations 是 authz 内置断言的违例夹具：每个 service 精确触发一条内置断言
+//（断言编号对应 authz.Build 文档注释）。整文件驱动 Build 时全部违例聚合进
+// 同一 error——聚合语义测试直接全量断言。本文件不含合法用例，合法面见
+// fixture.proto。
+package grpcapi.authz.testdata.v1;
+
+import "grpcapi/v1/authz.proto";
+
+option go_package = "github.com/lynx-go/grpcapi/authz/testdata;testdata";
+
+// 断言 1：完全未声明（无 method_auth 且服务无 default_access）。
+service BadMissingPolicyService {
+  rpc GetMissingPolicy(GetMissingPolicyRequest) returns (GetMissingPolicyResponse);
+}
+
+// 断言 1：显式 UNSPECIFIED（服务同样无缺省档可回落）。
+service BadUnspecifiedService {
+  rpc GetUnspecified(GetUnspecifiedRequest) returns (GetUnspecifiedResponse) {
+    option (grpcapi.v1.method_auth) = { access: ACCESS_LEVEL_UNSPECIFIED };
+  }
+}
+
+// 断言 2：SERVER 面未声明 api_key_scope。
+service BadServerNoScopeService {
+  rpc GetServerNoScope(GetServerNoScopeRequest) returns (GetServerNoScopeResponse) {
+    option (grpcapi.v1.method_auth) = { access: ACCESS_LEVEL_SERVER };
+  }
+}
+
+// 断言 3：经 service_auth 回落到 PERMISSION 且未声明 permissions。
+service BadPermissionNoPermsService {
+  option (grpcapi.v1.service_auth) = { default_access: ACCESS_LEVEL_PERMISSION };
+  rpc GetPermissionNoPerms(GetPermissionNoPermsRequest) returns (GetPermissionNoPermsResponse);
+}
+
+// 断言 4：SYSTEM 档位 v1 禁用。
+service BadSystemService {
+  option (grpcapi.v1.service_auth) = { default_access: ACCESS_LEVEL_SYSTEM };
+  rpc GetSystem(GetSystemRequest) returns (GetSystemResponse);
+}
+
+// 断言 6：scope 资源在词表外（alien 不在 {databases, storage} 中）。
+service BadAlienScopeService {
+  rpc GetAlienScope(GetAlienScopeRequest) returns (GetAlienScopeResponse) {
+    option (grpcapi.v1.method_auth) = {
+      access: ACCESS_LEVEL_SERVER
+      api_key_scope: { resource: "alien" op: SCOPE_OP_READ }
+    };
+  }
+}
+
+// 断言 7：api_key_scope.op 未声明（UNSPECIFIED）。
+service BadOplessScopeService {
+  rpc GetOplessScope(GetOplessScopeRequest) returns (GetOplessScopeResponse) {
+    option (grpcapi.v1.method_auth) = {
+      access: ACCESS_LEVEL_SERVER
+      api_key_scope: { resource: "databases" }
+    };
+  }
+}
+
+message GetMissingPolicyRequest {
+  string id = 1;
+}
+
+message GetMissingPolicyResponse {}
+
+message GetUnspecifiedRequest {
+  string id = 1;
+}
+
+message GetUnspecifiedResponse {}
+
+message GetServerNoScopeRequest {
+  string id = 1;
+}
+
+message GetServerNoScopeResponse {}
+
+message GetPermissionNoPermsRequest {
+  string id = 1;
+}
+
+message GetPermissionNoPermsResponse {}
+
+message GetSystemRequest {
+  string id = 1;
+}
+
+message GetSystemResponse {}
+
+message GetAlienScopeRequest {
+  string id = 1;
+}
+
+message GetAlienScopeResponse {}
+
+message GetOplessScopeRequest {
+  string id = 1;
+}
+
+message GetOplessScopeResponse {}

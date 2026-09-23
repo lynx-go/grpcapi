@@ -1,0 +1,36 @@
+version: v2
+deps:
+  - buf.build/googleapis/googleapis
+  - buf.build/bufbuild/protovalidate
+modules:
+  - path: proto
+  # authz/testdata 是仅供测试的 buf 模块（fixture 驱动 authz.Build），不发布
+  # BSR。它是 workspace 成员——fixture 必须 import 仓库内的
+  # grpcapi/v1/authz.proto（尚未发布 BSR，只能经 workspace 解析）；生成走
+  # 仓库根 buf.gen.yaml（go_package 前缀路由，不混入 genproto）。
+  # interceptor/testdata 与此相反：依赖可从 BSR 解析，自包含不入 workspace。
+  #
+  # 模块级 lint 整体替换（非合并）workspace 配置，故显式 use STANDARD：
+  #   - PACKAGE_DIRECTORY_MATCH：夹具包名（grpcapi.authz.testdata.v1）与
+  #     目录（authz/testdata，Go testdata 目录约定）不要求一致；
+  - path: authz/testdata
+    lint:
+      use:
+        - STANDARD
+      except:
+        - PACKAGE_DIRECTORY_MATCH
+  # example 模块：最小接入面活文档，参与 lint。与 authz/testdata 同理豁免
+  # PACKAGE_DIRECTORY_MATCH——模块根即包根（example/echo/v1），buf 要求的
+  # 相对模块根再嵌套同名目录属冗余；torchwood 既有契约同样豁免此规则。
+  - path: example/echo/v1
+    lint:
+      use:
+        - STANDARD
+      except:
+        - PACKAGE_DIRECTORY_MATCH
+lint:
+  use:
+    - STANDARD
+breaking:
+  use:
+    - FILE

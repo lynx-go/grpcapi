@@ -1,0 +1,9 @@
+version: v2
+# 仅生成 interceptor/testdata 模块（cwd 内），输出到模块内 gen/ 目录。
+# 与仓库根 buf.gen.yaml 分离，避免测试 fixture 混入 genproto 发布模块。
+inputs:
+  - directory: .
+plugins:
+  - remote: buf.build/protocolbuffers/go:v1.36.10
+    out: gen
+    opt: paths=source_relative

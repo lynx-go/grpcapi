@@ -1,0 +1,10 @@
+version: v2
+# interceptor/testdata 是仅供测试的 buf 模块（仓库根 buf.yaml workspace 的
+# 成员），不发布 BSR。deps 引入 buf.validate 规则注解。
+deps:
+  - buf.build/bufbuild/protovalidate
+lint:
+  # fixture 含刻意无法编译的 CEL 表达式（Internal 映射测试用），
+  # STANDARD 的 CEL 编译检查会拒绝它，故只保留最小集。
+  use:
+    - MINIMAL

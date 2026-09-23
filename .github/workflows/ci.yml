@@ -1,0 +1,40 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - run: test -z "$(gofmt -l .)"
+      - run: go test -race ./...
+
+  buf:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # 生成物入库（DESIGN.md §3 单点生成），同步断言需要完整树。
+          fetch-depth: 0
+      # buf remote 插件（protocolbuffers/go、grpc/go）公开可匿名执行；
+      # 若组织策略要求认证，在仓库 secret 配 BUF_TOKEN 并启用下行注释：
+      # - uses: bufbuild/buf-setup-action@v1
+      - uses: bufbuild/buf-setup-action@v1
+      # workspace lint + 生成 + 入库生成物零漂移（proto↔genproto 同步断言，
+      # DESIGN.md §8：proto 源与 genproto 必须同 PR）。
+      - run: buf lint
+      - run: buf generate
+      - run: git diff --exit-code -- genproto example authz/testdata
+      # interceptor/testdata 是自包含 buf 模块（不入 workspace），单独验证。
+      - working-directory: interceptor/testdata
+        run: |
+          buf lint
+          buf generate
+          git diff --exit-code

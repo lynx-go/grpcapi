@@ -1,0 +1,66 @@
+syntax = "proto3";
+
+// example 是 grpcapi 的最小接入面活文档（DESIGN.md §3：README 接入清单 ≤ 6 步，
+// example 不得超出该清单引入额外必需步骤）。本文件演示契约层：
+// google.api.http 路由 + grpcapi.v1 authz 注解（策略唯一声明源）。
+package example.echo.v1;
+
+import "buf/validate/validate.proto";
+import "google/api/annotations.proto";
+import "grpcapi/v1/authz.proto";
+
+option go_package = "github.com/lynx-go/grpcapi/example/echo/v1;echov1";
+
+message ShoutRequest {
+  string text = 1 [(buf.validate.field).string.max_len = 128];
+}
+
+message ShoutResponse {
+  string text = 1;
+  int32 length = 2;
+}
+
+message HearRequest {
+  string filter = 1;
+}
+
+message HearResponse {
+  repeated string lines = 1;
+}
+
+message PingRequest {}
+
+message PingResponse {
+  string pong = 1;
+}
+
+service EchoService {
+  option (grpcapi.v1.service_auth) = { default_access: ACCESS_LEVEL_END_USER };
+
+  // 服务面：scoped API key 可调（scope 词表由 example 注册，见 main.go）。
+  rpc Shout(ShoutRequest) returns (ShoutResponse) {
+    option (google.api.http) = {
+      post: "/v1/echo:shout"
+      body: "*"
+    };
+    option (grpcapi.v1.method_auth) = {
+      access: ACCESS_LEVEL_SERVER
+      api_key_scope: { resource: "echoes" op: SCOPE_OP_WRITE }
+    };
+  }
+
+  // 终端用户面：回落 service_auth.default_access，无需逐方法声明。
+  rpc Hear(HearRequest) returns (HearResponse) {
+    option (google.api.http) = {
+      get: "/v1/echo"
+    };
+  }
+
+  // 公共面。
+  rpc Ping(PingRequest) returns (PingResponse) {
+    option (google.api.http) = {
+      get: "/v1/echo:ping"
+    };
+    option (grpcapi.v1.method_auth) = { access: ACCESS_LEVEL_PUBLIC };
+  }
+}
