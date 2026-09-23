@@ -3,7 +3,11 @@ deps:
   - buf.build/googleapis/googleapis
   - buf.build/bufbuild/protovalidate
 modules:
-  - path: proto
+  # proto 是唯一对外发布的模块（BSR：buf.build/lynx-go/grpcapi）。
+  # authz/testdata 与 example/echo/v1 是仅供测试/文档的 workspace 成员，
+  # 无 name——不发布（buf push proto 只推本模块）。
+  - name: buf.build/lynx-go/grpcapi
+    path: proto
   # authz/testdata 是仅供测试的 buf 模块（fixture 驱动 authz.Build），不发布
   # BSR。它是 workspace 成员——fixture 必须 import 仓库内的
   # grpcapi/v1/authz.proto（尚未发布 BSR，只能经 workspace 解析）；生成走
