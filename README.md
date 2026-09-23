@@ -8,7 +8,7 @@
 
 ## 最小接入清单（≤ 6 步）
 
-1. `buf.yaml` deps 加 `buf.build/<org>/grpcapi`，proto 里 import 并注解：
+1. `buf.yaml` deps 加 `buf.build/lynx-go/grpcapi`，proto 里 import 并注解：
    ```protobuf
    import "grpcapi/v1/authz.proto";
    service EchoService {
@@ -35,10 +35,17 @@
 0.x：minor 可携带破坏性变更，见各 tag 的 migration note。升级前请同步项目
 `buf.lock` 与 `go.mod`（同 PR）。
 
-## BSR 发布前的 vendored 过渡
+## proto 分发
 
-库尚未发布 BSR 时，项目以 vendored 拷贝接入（torchwood 与 lynx-clean-template
-两个先例的完整形态）：
+proto 模块已发布 BSR：`buf.build/lynx-go/grpcapi`——项目 buf.yaml 的 deps
+直接登记即可（`buf dep update` 刷 buf.lock），proto 里
+`import "grpcapi/v1/authz.proto"`。proto 源变更须与库代码同 PR 并重新
+push（保持 buf.lock 指向最新 commit）。
+
+## 备选：vendored 过渡（BSR 不可用或私有部署时）
+
+项目以 vendored 拷贝接入（torchwood 与 lynx-clean-template 迁移期的
+完整先例）：
 
 1. 拷贝 `proto/grpcapi/v1/authz.proto` → 项目 `proto/third_party/grpcapi/v1/`
    （buf.yaml：主模块 `excludes: [proto/third_party]` + vendored 模块
