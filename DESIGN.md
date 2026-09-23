@@ -209,8 +209,9 @@ func OutgoingMatcher(direct ...string) func(string) (string, bool)
 // 内置：set-cookie 直透；项目追加专属头。
 type MuxOptions struct { ErrorHandler runtime.ErrorHandlerFunc; IncomingExtra, OutgoingDirect []string }
 func NewMux(o MuxOptions) *runtime.ServeMux
-func DialLocal(ctx context.Context, grpcAddr string, opts ...DialOption) (*grpc.ClientConn, error)
-// 同地址拨号（保留原 host 仅补默认端口），留 TLS 注入口（默认 insecure）。
+func LocalEndpoint(grpcAddr string) string
+func Dial(ctx context.Context, addr string, cfg DialConfig) (*grpc.ClientConn, error)
+// 同地址拨号（LocalEndpoint 归一），留 TLS 注入口（默认 insecure）。
 type RegisterFunc func(ctx context.Context, mux *runtime.ServeMux, conn grpc.ClientConnInterface) error
 func Register(ctx context.Context, mux *runtime.ServeMux, conn grpc.ClientConnInterface, fns ...RegisterFunc) error
 ```

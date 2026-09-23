@@ -35,6 +35,26 @@ const (
 	AccessSystem
 )
 
+// String 返回档位的小写稳定形态（"public"/"end_user"/"server"/"permission"/
+// "system"，未声明为 "unspecified"）。它是 guard.SwaggerAccessMatches 的
+// ServiceAccess 回调与文档生成场景的规范字符串——消费方不要各自维护映射。
+func (a AccessLevel) String() string {
+	switch a {
+	case AccessPublic:
+		return "public"
+	case AccessEndUser:
+		return "end_user"
+	case AccessServer:
+		return "server"
+	case AccessPermission:
+		return "permission"
+	case AccessSystem:
+		return "system"
+	default:
+		return "unspecified"
+	}
+}
+
 // ScopeOp 是 API key scope 的权限方向。
 type ScopeOp string
 

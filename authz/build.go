@@ -137,6 +137,15 @@ func methodAuthOption(method protoreflect.MethodDescriptor) *grpcapiv1.MethodAut
 	return ma
 }
 
+// ServiceDefaultAccess 读取 service_auth.default_access（未设置返回
+// AccessUnspecified，由断言层报缺失）。供 guard.SwaggerAccessMatches 的
+// ServiceAccess 回调等镜像消费点直接复用，避免各项目重写扩展解析
+// （lynx-clean-template 接入时发现的 API 缺口）。未登记枚举值返回
+// false——调用方应 fail-closed。
+func ServiceDefaultAccess(service protoreflect.ServiceDescriptor) (AccessLevel, bool) {
+	return accessLevelFromProto(serviceDefaultAccess(service))
+}
+
 // serviceDefaultAccess 读取 service_auth.default_access（未设置返回
 // UNSPECIFIED，由断言层报缺失）。
 func serviceDefaultAccess(service protoreflect.ServiceDescriptor) grpcapiv1.AccessLevel {
