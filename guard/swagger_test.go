@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lynx-go/grpcapi/authz"
+	"github.com/lynx-go/grpcapi/policy"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
@@ -51,7 +51,7 @@ const positiveSwaggerJSON = `{
 // setupSwaggerFixture 落盘最小手写 swagger fixture（临时目录），返回
 // (root, 文件描述符, 策略注册表)。root 下另放一个无对应 proto 的 swagger
 // 文件驱动跳过路径。
-func setupSwaggerFixture(t *testing.T, swaggerJSON string) (string, protoreflect.FileDescriptor, *authz.PolicySet) {
+func setupSwaggerFixture(t *testing.T, swaggerJSON string) (string, protoreflect.FileDescriptor, *policy.Set) {
 	t.Helper()
 	root := t.TempDir()
 	dir := filepath.Join(root, swaggerFixtureSub)
@@ -70,7 +70,7 @@ func setupSwaggerFixture(t *testing.T, swaggerJSON string) (string, protoreflect
 }
 
 // swaggerBaseOptions 返回与 fixture 匹配的最小合法选项。
-func swaggerBaseOptions(root string, fd protoreflect.FileDescriptor, set *authz.PolicySet) SwaggerOptions {
+func swaggerBaseOptions(root string, fd protoreflect.FileDescriptor, set *policy.Set) SwaggerOptions {
 	return SwaggerOptions{
 		GenprotoSubdirs: []string{swaggerFixtureSub},
 		GenprotoRoot:    root,

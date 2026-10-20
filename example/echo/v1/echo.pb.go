@@ -4,9 +4,8 @@
 // 	protoc        (unknown)
 // source: echo.proto
 
-// example 是 grpcapi 的最小接入面活文档（DESIGN.md §3：README 接入清单 ≤ 6 步，
-// example 不得超出该清单引入额外必需步骤）。本文件演示契约层：
-// google.api.http 路由 + grpcapi.v1 authz 注解（策略唯一声明源）。
+// example 是 grpcapi v3 的最小接入面活文档：路由由 google.api.http 声明，
+// 策略由 grpcapi.v1.policy 声明；server.New 负责 gRPC + gateway 装配。
 
 package echov1
 
@@ -297,7 +296,7 @@ var File_echo_proto protoreflect.FileDescriptor
 const file_echo_proto_rawDesc = "" +
 	"\n" +
 	"\n" +
-	"echo.proto\x12\x0fexample.echo.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1cgoogle/api/annotations.proto\x1a\x16grpcapi/v1/authz.proto\",\n" +
+	"echo.proto\x12\x0fexample.echo.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1cgoogle/api/annotations.proto\x1a\x17grpcapi/v1/policy.proto\",\n" +
 	"\fShoutRequest\x12\x1c\n" +
 	"\x04text\x18\x01 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x01R\x04text\";\n" +
 	"\rShoutResponse\x12\x12\n" +
@@ -309,14 +308,16 @@ const file_echo_proto_rawDesc = "" +
 	"\x05lines\x18\x01 \x03(\tR\x05lines\"\r\n" +
 	"\vPingRequest\"\"\n" +
 	"\fPingResponse\x12\x12\n" +
-	"\x04pong\x18\x01 \x01(\tR\x04pong2\xc3\x02\n" +
-	"\vEchoService\x12s\n" +
-	"\x05Shout\x12\x1d.example.echo.v1.ShoutRequest\x1a\x1e.example.echo.v1.ShoutResponse\"+\xea\xc4\x19\x0e\b\x03\"\n" +
-	"\n" +
-	"\x06echoes\x10\x02\x82\xd3\xe4\x93\x02\x13:\x01*\"\x0e/v1/echo:shout\x12U\n" +
+	"\x04pong\x18\x01 \x01(\tR\x04pong2\xf1\x02\n" +
+	"\vEchoService\x12\x88\x01\n" +
+	"\x05Shout\x12\x1d.example.echo.v1.ShoutRequest\x1a\x1e.example.echo.v1.ShoutResponse\"@\xda\xf0\x19#\n" +
+	"\x19J\a\x12\x05adminJ\x0e\"\fechoes:write\x1a\x06server\x82\xd3\xe4\x93\x02\x13:\x01*\"\x0e/v1/echo:shout\x12U\n" +
 	"\x04Hear\x12\x1c.example.echo.v1.HearRequest\x1a\x1d.example.echo.v1.HearResponse\"\x10\x82\xd3\xe4\x93\x02\n" +
-	"\x12\b/v1/echo\x12`\n" +
-	"\x04Ping\x12\x1c.example.echo.v1.PingRequest\x1a\x1d.example.echo.v1.PingResponse\"\x1b\xea\xc4\x19\x02\b\x01\x82\xd3\xe4\x93\x02\x0f\x12\r/v1/echo:ping\x1a\x06\xf2\xc4\x19\x02\b\x02B3Z1github.com/lynx-go/grpcapi/example/echo/v1;echov1b\x06proto3"
+	"\x12\b/v1/echo\x12j\n" +
+	"\x04Ping\x12\x1c.example.echo.v1.PingRequest\x1a\x1d.example.echo.v1.PingResponse\"%\xda\xf0\x19\f\n" +
+	"\x02\x18\x01\x1a\x06public\x82\xd3\xe4\x93\x02\x0f\x12\r/v1/echo:ping\x1a\x14\xd2\xf0\x19\x10\n" +
+	"\x02 \x01\x10\x02\x1a\bend_userBC\xca\xf0\x19\f\n" +
+	"\x06public\x10\x01 \x02Z1github.com/lynx-go/grpcapi/example/echo/v1;echov1b\x06proto3"
 
 var (
 	file_echo_proto_rawDescOnce sync.Once

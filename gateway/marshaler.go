@@ -2,7 +2,6 @@ package gateway
 
 import (
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
-	"google.golang.org/protobuf/encoding/protojson"
 )
 
 // protoJSONMarshaler 覆盖 ContentType 的 protojson 序列化器
@@ -18,20 +17,9 @@ func (m *protoJSONMarshaler) ContentType(_ interface{}) string {
 	return "application/json"
 }
 
-// NewMarshaler 返回 grpc-gateway 的统一 protojson 序列化器：
-//
-//   - Marshal：UseProtoNames=true（字段名 snake_case）+ EmitUnpopulated=false
-//     （零值字段不下发）；
-//   - Unmarshal：DiscardUnknown=true（未知字段容错，向前兼容）；
-//   - 流式分隔符保持 JSONPb 默认 "\n"。
+// NewMarshaler 返回默认 protojson 序列化器：snake_case、零值字段不下发、
+// 未知字段容错（向前兼容）。需要 camelCase 用 CamelCaseMarshaler()，
+// 需要严格未知字段用 NewMarshalerWithOptions。
 func NewMarshaler() runtime.Marshaler {
-	return &protoJSONMarshaler{
-		JSONPb: &runtime.JSONPb{
-			MarshalOptions: protojson.MarshalOptions{
-				UseProtoNames:   true,
-				EmitUnpopulated: false,
-			},
-			UnmarshalOptions: protojson.UnmarshalOptions{DiscardUnknown: true},
-		},
-	}
+	return NewMarshalerWithOptions(MarshalerOptions{})
 }

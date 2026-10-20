@@ -31,7 +31,7 @@ jobs:
       # DESIGN.md §8：proto 源与 genproto 必须同 PR）。
       - run: buf lint
       - run: buf generate
-      - run: git diff --exit-code -- genproto example authz/testdata
+      - run: git diff --exit-code -- genproto example
       # interceptor/testdata 是自包含 buf 模块（不入 workspace），单独验证。
       - working-directory: interceptor/testdata
         run: |

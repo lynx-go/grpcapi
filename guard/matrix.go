@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lynx-go/grpcapi/authz"
+	"github.com/lynx-go/grpcapi/policy"
 )
 
 // MatrixOptions 是 RenderMatrix 的渲染选项：列头与每方法行回调由项目定义
@@ -17,8 +17,8 @@ type MatrixOptions struct {
 	// Header 列头（不含首尾管道符）。
 	Header []string
 
-	// Row 把单个方法策略渲染为一行单元格；输出长度必须与 Header 一致。
-	Row func(p authz.MethodPolicy) []string
+	// Row 把单个 operation 策略渲染为一行单元格；输出长度必须与 Header 一致。
+	Row func(p policy.Operation) []string
 
 	// Preamble 渲染在矩阵表前的文档头（生成来源、再生成方式等项目文案）。
 	Preamble string
@@ -27,22 +27,21 @@ type MatrixOptions struct {
 	Appendix string
 }
 
-// RenderMatrix 从 PolicySet 渲染 Markdown 授权矩阵。输出确定性：行按方法全名
-// 排序（PolicySet.Methods() 的顺序契约不在此假设），列值全部来自 MethodPolicy
-// 与 Row 回调。set/Row/Header 任一为空、或行宽与列头不一致时返回错误
-// （防空转与静默生成残表）。
-func RenderMatrix(set *authz.PolicySet, o MatrixOptions) ([]byte, error) {
+// RenderMatrix 从 policy.Set 渲染 Markdown 授权矩阵。输出确定性：行按 operation
+// ID 排序，列值全部来自 policy.Operation 与 Row 回调。set/Row/Header 任一为空、
+// 或行宽与列头不一致时返回错误（防空转与静默生成残表）。
+func RenderMatrix(set *policy.Set, o MatrixOptions) ([]byte, error) {
 	switch {
 	case set == nil:
-		return nil, fmt.Errorf("guard.RenderMatrix: PolicySet 为 nil")
+		return nil, fmt.Errorf("guard.RenderMatrix: policy.Set 为 nil")
 	case o.Row == nil:
 		return nil, fmt.Errorf("guard.RenderMatrix: Row 回调必填")
 	case len(o.Header) == 0:
 		return nil, fmt.Errorf("guard.RenderMatrix: Header 必填")
 	}
-	methods := set.Methods()
+	methods := set.Operations()
 	if len(methods) == 0 {
-		return nil, fmt.Errorf("guard.RenderMatrix: PolicySet 为空（拒绝渲染空文档覆盖磁盘）")
+		return nil, fmt.Errorf("guard.RenderMatrix: policy.Set 为空（拒绝渲染空文档覆盖磁盘）")
 	}
 
 	type rowPair struct {
@@ -53,10 +52,10 @@ func RenderMatrix(set *authz.PolicySet, o MatrixOptions) ([]byte, error) {
 	for _, p := range methods {
 		cells := o.Row(p)
 		if len(cells) != len(o.Header) {
-			return nil, fmt.Errorf("guard.RenderMatrix: 方法 %s 的行宽 %d 与列头 %d 不一致",
-				p.Method, len(cells), len(o.Header))
+			return nil, fmt.Errorf("guard.RenderMatrix: operation %s 的行宽 %d 与列头 %d 不一致",
+				p.ID, len(cells), len(o.Header))
 		}
-		rows = append(rows, rowPair{method: p.Method, cells: cells})
+		rows = append(rows, rowPair{method: p.ID, cells: cells})
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].method < rows[j].method })
 

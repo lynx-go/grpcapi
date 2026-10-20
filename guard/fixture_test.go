@@ -5,8 +5,7 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/lynx-go/grpcapi/authz"
-	grpcapiv1 "github.com/lynx-go/grpcapi/genproto/grpcapi/v1"
+	"github.com/lynx-go/grpcapi/policy"
 	"google.golang.org/genproto/googleapis/api/annotations"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
@@ -25,9 +24,6 @@ func fixtureFileDescriptor(t *testing.T, protoPath, pkg string, extraBindings in
 
 	methodOpts := func(method string) *descriptorpb.MethodOptions {
 		opts := &descriptorpb.MethodOptions{}
-		proto.SetExtension(opts, grpcapiv1.E_MethodAuth, &grpcapiv1.MethodAuth{
-			Access: grpcapiv1.AccessLevel_ACCESS_LEVEL_PUBLIC,
-		})
 		proto.SetExtension(opts, annotations.E_Http, &annotations.HttpRule{
 			Pattern: &annotations.HttpRule_Get{Get: "/v1/" + method},
 		})
@@ -47,11 +43,6 @@ func fixtureFileDescriptor(t *testing.T, protoPath, pkg string, extraBindings in
 		}
 	}
 
-	svcOpts := &descriptorpb.ServiceOptions{}
-	proto.SetExtension(svcOpts, grpcapiv1.E_ServiceAuth, &grpcapiv1.ServiceAuth{
-		DefaultAccess: grpcapiv1.AccessLevel_ACCESS_LEVEL_PUBLIC,
-	})
-
 	fdp := &descriptorpb.FileDescriptorProto{
 		Name:    proto.String(protoPath),
 		Package: proto.String(pkg),
@@ -61,8 +52,7 @@ func fixtureFileDescriptor(t *testing.T, protoPath, pkg string, extraBindings in
 			{Name: proto.String("PingResponse")},
 		},
 		Service: []*descriptorpb.ServiceDescriptorProto{{
-			Name:    proto.String("DemoService"),
-			Options: svcOpts,
+			Name: proto.String("DemoService"),
 			Method: []*descriptorpb.MethodDescriptorProto{
 				{
 					Name:       proto.String("Ping"),
@@ -86,13 +76,30 @@ func fixtureFileDescriptor(t *testing.T, protoPath, pkg string, extraBindings in
 	return fd
 }
 
-// fixturePolicies 用 fixture descriptor 驱动 authz.Build 构造策略注册表
-// （guard 各断言 helper 的 Policies 输入与真实项目同源）。
-func fixturePolicies(t *testing.T, fd protoreflect.FileDescriptor) *authz.PolicySet {
+// fixturePolicies 用 fixture descriptor 构造策略注册表。fixture 的每个方法
+// 都显式标 public，供 guard 的 label 比对使用。
+func fixturePolicies(t *testing.T, fd protoreflect.FileDescriptor) *policy.Set {
 	t.Helper()
-	set, err := authz.Build([]protoreflect.FileDescriptor{fd}, authz.Options{})
+	var ops []policy.Operation
+	services := fd.Services()
+	for i := 0; i < services.Len(); i++ {
+		svc := services.Get(i)
+		methods := svc.Methods()
+		for j := 0; j < methods.Len(); j++ {
+			md := methods.Get(j)
+			ops = append(ops, policy.Operation{
+				ID:       "/" + string(svc.FullName()) + "/" + string(md.Name()),
+				Kind:     policy.KindGRPC,
+				Service:  string(svc.FullName()),
+				Exposure: policy.ExposurePublic,
+				Policy:   policy.Policy{Anonymous: true},
+				Label:    "public",
+			})
+		}
+	}
+	set, err := policy.NewSet(ops...)
 	if err != nil {
-		t.Fatalf("authz.Build(fixture) 失败: %v", err)
+		t.Fatalf("policy.NewSet(fixture) 失败: %v", err)
 	}
 	return set
 }

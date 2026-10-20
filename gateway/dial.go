@@ -22,6 +22,11 @@ type DialConfig struct {
 	// 非 nil 时以 TLS 凭证拨号。
 	TLS *tls.Config
 
+	// Target 覆盖目标解析；nil = LocalEndpoint。
+	Target func(string) string
+	// Dialer 覆盖底层拨号器（bufconn/自定义 unix socket）。
+	Dialer func(ctx context.Context, addr string) (net.Conn, error)
+
 	// DialOptions 追加在库默认项之后，同字段以后者为准（grpc 选项按序合并）。
 	DialOptions []grpc.DialOption
 }
@@ -58,8 +63,15 @@ func Dial(ctx context.Context, addr string, cfg DialConfig) (*grpc.ClientConn, e
 		cred,
 		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(maxRecvMsgSize)),
 	}
+	if cfg.Dialer != nil {
+		opts = append(opts, grpc.WithContextDialer(cfg.Dialer))
+	}
 	opts = append(opts, cfg.DialOptions...)
-	return grpc.NewClient(LocalEndpoint(addr), opts...)
+	target := LocalEndpoint(addr)
+	if cfg.Target != nil {
+		target = cfg.Target(addr)
+	}
+	return grpc.NewClient(target, opts...)
 }
 
 // RegisterFunc 是单个服务的 gateway 注册函数。genproto 生成的

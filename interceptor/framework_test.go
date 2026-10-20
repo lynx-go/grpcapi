@@ -5,17 +5,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lynx-go/grpcapi/authz"
-	grpcapiv1 "github.com/lynx-go/grpcapi/genproto/grpcapi/v1"
 	"github.com/lynx-go/grpcapi/interceptor"
+	"github.com/lynx-go/grpcapi/policy"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/reflection"
-	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/reflect/protodesc"
-	"google.golang.org/protobuf/reflect/protoreflect"
-	"google.golang.org/protobuf/types/descriptorpb"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
 
@@ -41,47 +36,25 @@ func TestFrameworkExempt(t *testing.T) {
 	}
 }
 
-// buildTestPolicySet 以内存构造的 FileDescriptor 生成 PolicySet：声明
-// services 中的每个方法均带 PUBLIC 档 method_auth 注解。用于模拟
-// "proto 已注解" 的侧，grpc server 侧可注册超集方法以制造漂移。
-func buildTestPolicySet(t *testing.T, services map[string][]string) *authz.PolicySet {
+// buildTestPolicySet 直接构造策略集：声明 services 中的每个方法都有策略。
+// 用于模拟「proto 已注解」的侧，grpc server 侧可注册超集方法以制造漂移。
+func buildTestPolicySet(t *testing.T, services map[string][]string) *policy.Set {
 	t.Helper()
-
-	fdp := &descriptorpb.FileDescriptorProto{
-		Name:    proto.String("testshop.proto"),
-		Package: proto.String("testshop.v1"),
-		Syntax:  proto.String("proto3"),
-		MessageType: []*descriptorpb.DescriptorProto{
-			{Name: proto.String("Empty")},
-		},
-	}
+	var ops []policy.Operation
 	for svcName, methods := range services {
-		// descriptor 需要简单名；FullName 由 package 组合而成。
-		sdp := &descriptorpb.ServiceDescriptorProto{
-			Name: proto.String(svcName[strings.LastIndex(svcName, ".")+1:]),
-		}
 		for _, m := range methods {
-			mopts := &descriptorpb.MethodOptions{}
-			proto.SetExtension(mopts, grpcapiv1.E_MethodAuth, &grpcapiv1.MethodAuth{
-				Access: grpcapiv1.AccessLevel_ACCESS_LEVEL_PUBLIC,
-			})
-			sdp.Method = append(sdp.Method, &descriptorpb.MethodDescriptorProto{
-				Name:       proto.String(m),
-				InputType:  proto.String(".testshop.v1.Empty"),
-				OutputType: proto.String(".testshop.v1.Empty"),
-				Options:    mopts,
+			ops = append(ops, policy.Operation{
+				ID:       "/" + svcName + "/" + m,
+				Kind:     policy.KindGRPC,
+				Service:  svcName,
+				Exposure: policy.ExposureInternal,
+				Policy:   policy.Policy{Anonymous: true},
 			})
 		}
-		fdp.Service = append(fdp.Service, sdp)
 	}
-	// fixture 文件无 import 依赖，resolver 传 nil 即可。
-	fd, err := protodesc.NewFile(fdp, nil)
+	set, err := policy.NewSet(ops...)
 	if err != nil {
-		t.Fatalf("protodesc.NewFile: %v", err)
-	}
-	set, err := authz.Build([]protoreflect.FileDescriptor{fd}, authz.Options{})
-	if err != nil {
-		t.Fatalf("authz.Build: %v", err)
+		t.Fatalf("policy.NewSet: %v", err)
 	}
 	return set
 }

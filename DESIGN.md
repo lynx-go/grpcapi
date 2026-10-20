@@ -1,5 +1,8 @@
 # grpcapi 设计稿（v2.1 定稿）
 
+> **历史留档**：本文描述 v2 设计。v3（无向后兼容，替换 `authz` 为
+> `policy` + 新 `authz`）见 [GENERALIZATION.md](./GENERALIZATION.md)。
+>
 > 把 torchwood 的「proto 声明 API + grpc-gateway 暴露」模式固化为 lynx 生态可复用库。
 > 定稿日期：2026-09-23。经对抗审查 + 独立设计交叉验证 + 深度复查三轮评审。
 

@@ -1,120 +1,80 @@
-// Command example 是 grpcapi 最小接入面的活文档（README 六步的每一步都在
-// 此对应一段真实代码）。它不引入超出清单的必需步骤：没有 lynx、没有 Wire、
-// 没有 auth 实现（SlotAuth 由项目按需插入）。
+// Command example 是 grpcapi v3 Tier 0 的活文档：proto 定义路由与策略，
+// server.New 一步完成 gRPC + gateway + 中间件 + 启动断言。
 package main
 
 import (
 	"context"
 	"log"
-	"net"
 
+	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/reflect/protoreflect"
-	"google.golang.org/protobuf/types/known/structpb"
 
-	"github.com/lynx-go/grpcapi/authz"
 	echov1 "github.com/lynx-go/grpcapi/example/echo/v1"
-	"github.com/lynx-go/grpcapi/gateway"
-	"github.com/lynx-go/grpcapi/interceptor"
+	"github.com/lynx-go/grpcapi/policy"
+	"github.com/lynx-go/grpcapi/policy/protopolicy"
+	"github.com/lynx-go/grpcapi/server"
 )
-
-// errorBody 是 ErrorBodyBuilder 的最小实现：错误体形状是项目的产品契约，
-// 库只负责机制（映射/脱敏/Retry-After），构造权在项目。
-type errorBody struct{}
-
-func (errorBody) Build(code codes.Code, message, errorID string) proto.Message {
-	v, err := structpb.NewStruct(map[string]any{
-		"code":     code.String(),
-		"message":  message,
-		"error_id": errorID,
-	})
-	if err != nil {
-		return &structpb.Struct{}
-	}
-	return v
-}
-
-func (errorBody) MapErrorCode(codes.Code) any { return nil }
 
 func main() {
 	ctx := context.Background()
 
-	// 第 3 步：注册词表并收集策略（fail-closed：词表外的 scope 资源启动即红）。
-	set, err := authz.Build(
-		[]protoreflect.FileDescriptor{echov1.File_echo_proto},
-		authz.Options{Vocabulary: authz.Vocabulary{ScopeResources: []string{"echoes"}}},
-	)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	// 第 4 步：拦截器链。Assemble 构造期断言槽位顺序（ClientInfo 打头、
-	// Validate 收尾）；SlotAuth/SlotRateLimit/SlotAudit/SlotUsage 按需插入。
-	chain, err := interceptor.Assemble(
-		interceptor.ChainItem{
-			Slot:        interceptor.SlotClientInfo,
-			Interceptor: interceptor.NewClientInfo(interceptor.ClientInfoConfig{}).Unary(),
-		},
-		interceptor.ChainItem{
-			Slot:        interceptor.SlotValidate,
-			Interceptor: interceptor.NewValidate().Unary(),
-		},
-	)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	// 第 4 步（HTTP 面）：gateway 装配件。错误体经 ErrorBodyBuilder 注入。
-	mux := gateway.NewMux(gateway.MuxOptions{
-		ErrorHandler: gateway.NewErrorHandler(errorBody{}, gateway.HTTPOptions{}),
+	// 第 1 步：从 proto Service 收集策略（缺策略/非法值启动即红）。
+	set, err := policy.Build(ctx, policy.FromFiles(echov1.File_echo_proto), policy.Options{
+		Provider: protopolicy.New(protopolicy.Options{}),
+		Registry: policy.DefaultRegistry(),
 	})
-	conn, err := gateway.Dial(ctx, gateway.LocalEndpoint(":9060"), gateway.DialConfig{})
 	if err != nil {
 		log.Fatal(err)
 	}
-	// 项目实际接入时，把 buf 生成的 RegisterXxxHandlerFromEndpoint 包成
-	// gateway.RegisterFunc 传入 gateway.Register（example 的生成管线未含
-	// gateway 插件，故此处仅演示装配件构造）：
-	//
-	//	err = gateway.Register(ctx, mux, conn, func(ctx context.Context,
-	//		mux *runtime.ServeMux, conn grpc.ClientConnInterface) error {
-	//		return echov1.RegisterEchoServiceHandler(ctx, mux, conn)
-	//	})
-	_ = conn
-	_ = mux // 装配件就绪；项目侧 Register 后挂到 HTTP server 监听
 
-	// 第 5 步：gRPC server + 启动断言（已注册方法缺策略即拒绝启动）。
-	srv := grpc.NewServer(grpc.ChainUnaryInterceptor(chain...))
-	echov1.RegisterEchoServiceServer(srv, &echoServer{})
-	if err := interceptor.AssertAllRegisteredHavePolicy(srv, set); err != nil {
-		log.Fatal(err)
+	// 第 2 步：注册 Service（手写 6 行；codegen 可生成同样的 bundle）。
+	desc := echov1.File_echo_proto.Services().ByName("EchoService")
+	if desc == nil {
+		log.Fatal("EchoService descriptor missing")
+	}
+	registration := server.Registration{
+		API:        "public",
+		Name:       "EchoService",
+		Descriptor: desc,
+		RegisterGRPC: func(s *grpc.Server) {
+			echov1.RegisterEchoServiceServer(s, echoServer{})
+		},
+		RegisterHTTP: func(ctx context.Context, mux *runtime.ServeMux, conn grpc.ClientConnInterface) error {
+			return echov1.RegisterEchoServiceHandlerClient(ctx, mux, echov1.NewEchoServiceClient(conn))
+		},
 	}
 
-	// 第 6 步：挂守卫测试——见 example_test.go（guard.AssertMethodCount 与
-	// guard.SwaggerAccessMatches；后者需要项目 buf 管线含 openapiv2 插件）。
-
-	lis, err := net.Listen("tcp", ":9060")
+	// 第 3 步：一步装配 gRPC + gateway + 默认链 + 健康检查 + 路由表。
+	// 本示例没有 authn，protected 路由会按预期返回 401；生产接入 JWT/
+	// session/API key 后即可放行。
+	srv, err := server.New(ctx, server.Config{
+		Policy:               set,
+		Services:             []server.Registration{registration},
+		GRPCAddr:             ":9060",
+		HTTPAddr:             ":8080",
+		AllowNoAuthenticator: true,
+	})
 	if err != nil {
 		log.Fatal(err)
 	}
-	log.Printf("example listening on %s (HTTP mux assembled, see README)", lis.Addr())
-	log.Fatal(srv.Serve(lis))
+	for _, r := range srv.Routes() {
+		log.Printf("route: %s %s -> %s (%s)", r.Method, r.Path, r.FullMethod, r.Label)
+	}
+	log.Fatal(srv.Run(ctx))
 }
 
 type echoServer struct {
 	echov1.UnimplementedEchoServiceServer
 }
 
-func (s *echoServer) Shout(_ context.Context, req *echov1.ShoutRequest) (*echov1.ShoutResponse, error) {
+func (echoServer) Shout(_ context.Context, req *echov1.ShoutRequest) (*echov1.ShoutResponse, error) {
 	return &echov1.ShoutResponse{Text: req.GetText(), Length: int32(len(req.GetText()))}, nil
 }
 
-func (s *echoServer) Hear(_ context.Context, req *echov1.HearRequest) (*echov1.HearResponse, error) {
+func (echoServer) Hear(_ context.Context, req *echov1.HearRequest) (*echov1.HearResponse, error) {
 	return &echov1.HearResponse{Lines: []string{req.GetFilter()}}, nil
 }
 
-func (s *echoServer) Ping(context.Context, *echov1.PingRequest) (*echov1.PingResponse, error) {
+func (echoServer) Ping(context.Context, *echov1.PingRequest) (*echov1.PingResponse, error) {
 	return &echov1.PingResponse{Pong: "pong"}, nil
 }

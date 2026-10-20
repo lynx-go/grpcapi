@@ -39,14 +39,25 @@ func NewClientInfo(cfg ClientInfoConfig) *ClientInfoInterceptor {
 	return &ClientInfoInterceptor{trusted: trusted}
 }
 
-// Unary 返回链首拦截器（对应 chain.SlotClientInfo）。
+// Unary 返回链首拦截器（对应 StageClientInfo）。
 func (c *ClientInfoInterceptor) Unary() grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, _ *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
-		if md, ok := metadata.FromIncomingContext(ctx); ok {
-			ctx = contextx.WithClientInfo(ctx, c.extractClientInfo(ctx, md))
-		}
-		return handler(ctx, req)
+		return handler(c.withClientInfo(ctx), req)
 	}
+}
+
+// Stream 返回 stream 版 clientInfo 拦截器。
+func (c *ClientInfoInterceptor) Stream() grpc.StreamServerInterceptor {
+	return func(srv any, ss grpc.ServerStream, _ *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+		return handler(srv, &wrappedStream{ServerStream: ss, ctx: c.withClientInfo(ss.Context())})
+	}
+}
+
+func (c *ClientInfoInterceptor) withClientInfo(ctx context.Context) context.Context {
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		return contextx.WithClientInfo(ctx, c.extractClientInfo(ctx, md))
+	}
+	return ctx
 }
 
 func (c *ClientInfoInterceptor) extractClientInfo(ctx context.Context, md metadata.MD) contextx.ClientInfo {
@@ -57,10 +68,16 @@ func (c *ClientInfoInterceptor) extractClientInfo(ctx context.Context, md metada
 	}
 	realIP := firstMetadataValue(md, "x-real-ip")
 
+	peerIP := PeerIP(ctx)
+	injected := firstMetadataValue(md, "x-grpcapi-client-ip")
 	var ip string
-	if peerIP := PeerIP(ctx); peerIP != "" {
+	switch {
+	case injected != "" && (peerIP == "" || c.trusted.Trusted(peerIP)):
+		// gateway 注入的可信 client-ip；in-process 无 peer 时直接采信。
+		ip = injected
+	case peerIP != "":
 		ip = c.trusted.ResolveClientIP(peerIP, xff, realIP)
-	} else {
+	default:
 		// 无 peer 信息（进程内调用/测试）时退化为直接取 XFF 首跳。
 		ip = FirstForwardedHop(xff)
 		if ip == "" {

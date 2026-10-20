@@ -41,25 +41,54 @@ func NewValidate() *ValidateInterceptor {
 	return v
 }
 
-// Unary 返回链尾拦截器（对应 chain.SlotValidate）。
+// Unary 返回链尾拦截器（对应 StageValidate）。
 func (v *ValidateInterceptor) Unary() grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 		if v == nil || FrameworkExempt(info.FullMethod) {
 			return handler(ctx, req)
 		}
-		if v.validator == nil {
-			return nil, status.Error(codes.Internal, "request validation rules failed to initialize: "+v.initErr.Error())
-		}
-		msg, ok := req.(proto.Message)
-		if !ok {
-			// 非 proto 消息（理论不可达）不校验，交由后续链路处理。
-			return handler(ctx, req)
-		}
-		if err := v.validator.Validate(msg); err != nil {
-			return nil, validateStatusError(err)
+		if err := v.validateMessage(req); err != nil {
+			return nil, err
 		}
 		return handler(ctx, req)
 	}
+}
+
+// Stream 返回 stream 校验拦截器：包装 RecvMsg，逐条校验 client/bidi 消息；
+// server-streaming 的首个请求也会被校验。
+func (v *ValidateInterceptor) Stream() grpc.StreamServerInterceptor {
+	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+		if v == nil || FrameworkExempt(info.FullMethod) {
+			return handler(srv, ss)
+		}
+		if v.validator == nil {
+			return v.initError()
+		}
+		return handler(srv, &validatingStream{ServerStream: ss, validator: v})
+	}
+}
+
+func (v *ValidateInterceptor) validateMessage(m any) error {
+	if v == nil || v.validator == nil {
+		return v.initError()
+	}
+	msg, ok := m.(proto.Message)
+	if !ok {
+		// 非 proto 消息（理论不可达）不校验，交由后续链路处理。
+		return nil
+	}
+	if err := v.validator.Validate(msg); err != nil {
+		return validateStatusError(err)
+	}
+	return nil
+}
+
+func (v *ValidateInterceptor) initError() error {
+	msg := "request validation rules failed to initialize"
+	if v != nil && v.initErr != nil {
+		msg += ": " + v.initErr.Error()
+	}
+	return status.Error(codes.Internal, msg)
 }
 
 // validateStatusError 映射校验错误：规则违规 → InvalidArgument（多条以

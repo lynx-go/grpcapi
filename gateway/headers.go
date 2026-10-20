@@ -35,6 +35,10 @@ func IncomingMatcher(extraAllow ...string) func(string) (string, bool) {
 			// 见函数注释：放行即双写 401，恒拒绝。
 			return "", false
 		}
+		if lk == "x-grpcapi-client-ip" {
+			// 内部可信 client-ip 只能由 gateway annotator 注入，客户端不得伪造。
+			return "", false
+		}
 		if _, ok := allowed[lk]; ok {
 			return lk, true
 		}

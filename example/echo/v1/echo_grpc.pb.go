@@ -4,9 +4,8 @@
 // - protoc             (unknown)
 // source: echo.proto
 
-// example 是 grpcapi 的最小接入面活文档（DESIGN.md §3：README 接入清单 ≤ 6 步，
-// example 不得超出该清单引入额外必需步骤）。本文件演示契约层：
-// google.api.http 路由 + grpcapi.v1 authz 注解（策略唯一声明源）。
+// example 是 grpcapi v3 的最小接入面活文档：路由由 google.api.http 声明，
+// 策略由 grpcapi.v1.policy 声明；server.New 负责 gRPC + gateway 装配。
 
 package echov1
 
@@ -32,9 +31,9 @@ const (
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type EchoServiceClient interface {
-	// 服务面：scoped API key 可调（scope 词表由 example 注册，见 main.go）。
+	// 服务面：admin 角色 OR 带 echoes:write scope 的 API key。
 	Shout(ctx context.Context, in *ShoutRequest, opts ...grpc.CallOption) (*ShoutResponse, error)
-	// 终端用户面：回落 service_auth.default_access，无需逐方法声明。
+	// 终端用户面：回落 service default（authenticated）。
 	Hear(ctx context.Context, in *HearRequest, opts ...grpc.CallOption) (*HearResponse, error)
 	// 公共面。
 	Ping(ctx context.Context, in *PingRequest, opts ...grpc.CallOption) (*PingResponse, error)
@@ -82,9 +81,9 @@ func (c *echoServiceClient) Ping(ctx context.Context, in *PingRequest, opts ...g
 // All implementations must embed UnimplementedEchoServiceServer
 // for forward compatibility.
 type EchoServiceServer interface {
-	// 服务面：scoped API key 可调（scope 词表由 example 注册，见 main.go）。
+	// 服务面：admin 角色 OR 带 echoes:write scope 的 API key。
 	Shout(context.Context, *ShoutRequest) (*ShoutResponse, error)
-	// 终端用户面：回落 service_auth.default_access，无需逐方法声明。
+	// 终端用户面：回落 service default（authenticated）。
 	Hear(context.Context, *HearRequest) (*HearResponse, error)
 	// 公共面。
 	Ping(context.Context, *PingRequest) (*PingResponse, error)

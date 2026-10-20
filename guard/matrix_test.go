@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lynx-go/grpcapi/authz"
+	"github.com/lynx-go/grpcapi/policy"
 )
 
 const (
@@ -20,12 +20,8 @@ func TestRenderMatrixSnapshot(t *testing.T) {
 
 	rendered, err := RenderMatrix(set, MatrixOptions{
 		Header: []string{"Method", "Access"},
-		Row: func(p authz.MethodPolicy) []string {
-			acc, ok := accessString(p.Access)
-			if !ok {
-				t.Fatalf("method %s access 非法", p.Method)
-			}
-			return []string{p.Method, acc}
+		Row: func(p policy.Operation) []string {
+			return []string{p.ID, p.EffectiveLabel()}
 		},
 		Preamble: "# 授权矩阵",
 		Appendix: "## 附录",
@@ -54,13 +50,13 @@ func TestRenderMatrixRejectsBadInput(t *testing.T) {
 	set := fixturePolicies(t, fd)
 	okOpts := MatrixOptions{
 		Header: []string{"Method", "Access"},
-		Row: func(p authz.MethodPolicy) []string {
-			return []string{p.Method, "public"}
+		Row: func(p policy.Operation) []string {
+			return []string{p.ID, "public"}
 		},
 	}
 
 	if _, err := RenderMatrix(nil, okOpts); err == nil {
-		t.Error("期望 nil PolicySet 报错")
+		t.Error("期望 nil policy.Set 报错")
 	}
 	if _, err := RenderMatrix(set, MatrixOptions{Header: okOpts.Header}); err == nil {
 		t.Error("期望缺 Row 回调报错")

@@ -2,84 +2,202 @@ package interceptor
 
 import (
 	"fmt"
+	"strings"
 
 	"google.golang.org/grpc"
 )
 
-// Slot 标记拦截器在链上的职能位。Assemble 依据 Slot 做构造期顺序断言：
-// 配置错误启动即红，而非静默产出一条语义错乱的链。
-type Slot int
-
+// 内置 Stage 名。
 const (
-	// SlotClientInfo 必须打头：后续拦截器（限流/审计）都依赖 ctx 中的
-	// 客户端信息。
-	SlotClientInfo Slot = iota
-	SlotAuth
-	SlotRateLimit
-	SlotAudit
-	SlotUsage
-	// SlotValidate 必须收尾：校验失败的请求同样要产生审计行并计入用量。
-	SlotValidate
-	// SlotCount 是哨兵，不是合法槽位。
-	SlotCount
+	StageRecovery   = "recovery"
+	StageRequestID  = "requestid"
+	StageClientInfo = "clientinfo"
+	StageAuthn      = "authn"
+	StageRateLimit  = "ratelimit"
+	StageAudit      = "audit"
+	StageUsage      = "usage"
+	StageAuthz      = "authz"
+	StageValidate   = "validate"
 )
 
-var slotNames = [...]string{
-	SlotClientInfo: "clientinfo",
-	SlotAuth:       "auth",
-	SlotRateLimit:  "ratelimit",
-	SlotAudit:      "audit",
-	SlotUsage:      "usage",
-	SlotValidate:   "validate",
+// 内置 Stage 顺序（升序 = 执行顺序）。
+const (
+	OrderRecovery   = 0
+	OrderRequestID  = 10
+	OrderClientInfo = 20
+	OrderAuthn      = 30
+	OrderRateLimit  = 40
+	OrderAudit      = 50
+	OrderUsage      = 60
+	OrderAuthz      = 70
+	OrderValidate   = 80
+)
+
+// Stage 是链上的一条拦截器，可同时提供 unary/stream 实现。
+type Stage struct {
+	Name   string
+	Order  int
+	Unary  grpc.UnaryServerInterceptor
+	Stream grpc.StreamServerInterceptor
 }
 
-func (s Slot) String() string {
-	if s < 0 || s >= SlotCount {
-		return fmt.Sprintf("slot(%d)", int(s))
-	}
-	return slotNames[s]
+// ChainOptions 是严格的链约束；零值 = 只校验名字/顺序/非空。
+type ChainOptions struct {
+	First    string
+	Last     string
+	Required []string
 }
 
-// ChainItem 是待装配的单条拦截器及其职能位。
-type ChainItem struct {
-	Slot        Slot
-	Interceptor grpc.UnaryServerInterceptor
+// DefaultChainOptions 是 torchwood 风格的严格默认：clientinfo 打头、
+// validate 收尾。
+func DefaultChainOptions() ChainOptions {
+	return ChainOptions{
+		First:    StageClientInfo,
+		Last:     StageValidate,
+		Required: []string{StageClientInfo, StageValidate},
+	}
 }
 
-// Assemble 按装配顺序构造拦截器切片，并做构造期断言（启动即红，不
-// 静默）：
-//
-//   - Slot 必须单调不减：同一 slot 允许多条（如多层限流），乱序或
-//     回退（如 auth 之后出现 clientinfo）报错；
-//   - SlotClientInfo 必须存在且打头；
-//   - SlotValidate 必须存在且收尾；
-//   - 中间位允许 auth/ratelimit/audit/usage 的任意子集与顺序。
-//
-// 刻意不是框架：没有注册表、没有选项模式，一个纯函数 + 显式报错。
-func Assemble(items ...ChainItem) ([]grpc.UnaryServerInterceptor, error) {
-	if len(items) == 0 {
-		return nil, fmt.Errorf("interceptor chain: no items")
+// Chain 是不可变拦截器链。
+type Chain struct {
+	stages []Stage
+}
+
+// Assemble 按输入顺序装配；校验名字唯一、Order 单调不减、每 Stage 非空。
+func Assemble(stages ...Stage) (*Chain, error) {
+	return AssembleWith(ChainOptions{}, stages...)
+}
+
+// AssembleWith 在 Assemble 基础上校验 First/Last/Required。
+func AssembleWith(opts ChainOptions, stages ...Stage) (*Chain, error) {
+	if len(stages) == 0 {
+		return nil, fmt.Errorf("interceptor chain: no stages")
 	}
-	prev := Slot(-1)
-	out := make([]grpc.UnaryServerInterceptor, 0, len(items))
-	for i, item := range items {
-		if item.Slot < 0 || item.Slot >= SlotCount {
-			return nil, fmt.Errorf("interceptor chain: item %d has invalid slot %s", i, item.Slot)
+	seen := make(map[string]struct{}, len(stages))
+	prev := -1
+	for i, st := range stages {
+		if st.Name == "" {
+			return nil, fmt.Errorf("interceptor chain: stage %d has empty name", i)
 		}
-		if item.Interceptor == nil {
-			return nil, fmt.Errorf("interceptor chain: item %d (slot %s) has nil interceptor", i, item.Slot)
+		if _, dup := seen[st.Name]; dup {
+			return nil, fmt.Errorf("interceptor chain: duplicate stage %q", st.Name)
 		}
-		if item.Slot < prev {
-			return nil, fmt.Errorf("interceptor chain: item %d slot %s goes backwards after %s", i, item.Slot, prev)
+		seen[st.Name] = struct{}{}
+		if st.Unary == nil && st.Stream == nil {
+			return nil, fmt.Errorf("interceptor chain: stage %q has no interceptor", st.Name)
 		}
-		prev = item.Slot
-		out = append(out, item.Interceptor)
+		if st.Order < prev {
+			return nil, fmt.Errorf("interceptor chain: stage %q order %d goes backwards after %d", st.Name, st.Order, prev)
+		}
+		prev = st.Order
 	}
-	if items[0].Slot != SlotClientInfo {
-		return nil, fmt.Errorf("interceptor chain: first item must be %s, got %s", SlotClientInfo, items[0].Slot)
+	if opts.First != "" && stages[0].Name != opts.First {
+		return nil, fmt.Errorf("interceptor chain: first stage must be %q, got %q", opts.First, stages[0].Name)
 	}
-	if last := items[len(items)-1].Slot; last != SlotValidate {
-		return nil, fmt.Errorf("interceptor chain: last item must be %s, got %s", SlotValidate, last)
+	if opts.Last != "" {
+		last := stages[len(stages)-1].Name
+		if last != opts.Last {
+			return nil, fmt.Errorf("interceptor chain: last stage must be %q, got %q", opts.Last, last)
+		}
 	}
-	return out, nil
+	for _, name := range opts.Required {
+		if _, ok := seen[name]; !ok {
+			return nil, fmt.Errorf("interceptor chain: required stage %q is missing", name)
+		}
+	}
+	out := make([]Stage, len(stages))
+	copy(out, stages)
+	return &Chain{stages: out}, nil
+}
+
+// Unary 返回 unary 拦截器切片（保持 Stage 顺序）。
+func (c *Chain) Unary() []grpc.UnaryServerInterceptor {
+	if c == nil {
+		return nil
+	}
+	out := make([]grpc.UnaryServerInterceptor, 0, len(c.stages))
+	for _, st := range c.stages {
+		if st.Unary != nil {
+			out = append(out, st.Unary)
+		}
+	}
+	return out
+}
+
+// Stream 返回 stream 拦截器切片（保持 Stage 顺序）。
+func (c *Chain) Stream() []grpc.StreamServerInterceptor {
+	if c == nil {
+		return nil
+	}
+	out := make([]grpc.StreamServerInterceptor, 0, len(c.stages))
+	for _, st := range c.stages {
+		if st.Stream != nil {
+			out = append(out, st.Stream)
+		}
+	}
+	return out
+}
+
+// ServerOptions 返回可直接传给 grpc.NewServer 的 chain 选项。
+func (c *Chain) ServerOptions() []grpc.ServerOption {
+	var opts []grpc.ServerOption
+	if u := c.Unary(); len(u) > 0 {
+		opts = append(opts, grpc.ChainUnaryInterceptor(u...))
+	}
+	if s := c.Stream(); len(s) > 0 {
+		opts = append(opts, grpc.ChainStreamInterceptor(s...))
+	}
+	return opts
+}
+
+// Has 报告是否存在带 unary 实现的指定 Stage。
+func (c *Chain) Has(name string) bool {
+	for _, st := range c.stages {
+		if st.Name == name && st.Unary != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// HasStream 报告是否存在带 stream 实现的指定 Stage。
+func (c *Chain) HasStream(name string) bool {
+	for _, st := range c.stages {
+		if st.Name == name && st.Stream != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// HasStage 报告 Stage 是否存在（不论 transport）。
+func (c *Chain) HasStage(name string) bool {
+	for _, st := range c.stages {
+		if st.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// Stages 返回 Stage 的副本。
+func (c *Chain) Stages() []Stage {
+	if c == nil {
+		return nil
+	}
+	out := make([]Stage, len(c.stages))
+	copy(out, c.stages)
+	return out
+}
+
+// String 便于启动日志。
+func (c *Chain) String() string {
+	if c == nil {
+		return "<nil>"
+	}
+	names := make([]string, 0, len(c.stages))
+	for _, st := range c.stages {
+		names = append(names, st.Name)
+	}
+	return strings.Join(names, " -> ")
 }

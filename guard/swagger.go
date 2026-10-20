@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lynx-go/grpcapi/authz"
+	"github.com/lynx-go/grpcapi/policy"
 	"google.golang.org/genproto/googleapis/api/annotations"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -32,11 +32,11 @@ type SwaggerOptions struct {
 	GenprotoRoot string
 
 	// Files 业务 proto 文件描述符清单（与 genproto 生成物一一对应的单一事实源，
-	// 通常与启动期 authz.Build 的输入同源）。
+	// 通常与启动期 policy.Build 的输入同源）。
 	Files []protoreflect.FileDescriptor
 
-	// Policies 策略注册表（authz.Build 的产物）。
-	Policies *authz.PolicySet
+	// Policies 策略注册表（policy.Build 的产物）。
+	Policies *policy.Set
 
 	// AccessExtension swagger access 扩展键名（空 = AccessExtensionKey）。
 	AccessExtension string
@@ -50,8 +50,8 @@ type SwaggerOptions struct {
 	// operation（项目按自身规模设定；MinOps<=0 直接 Fatal）。
 	MinFiles, MinOps int
 
-	// ServiceAccess 解析服务默认 access 档（method_auth 缺省回落源，
-	// 通常包装 service_auth 收集逻辑）。任一业务服务解析失败即 Fatal。
+	// ServiceAccess 返回服务级默认文档 label（方法未显式覆盖时的回落源）。
+	// 任一业务服务解析失败即 Fatal。
 	ServiceAccess func(service string) (string, bool)
 }
 
@@ -69,11 +69,11 @@ type swaggerOperation struct {
 }
 
 // SwaggerAccessMatches 断言 genproto/**/*.swagger.json 的 access 扩展与
-// authz.PolicySet 完全一致（平移自 torchwood
+// policy.Set 完全一致（平移自 torchwood
 // TestSwaggerAccessExtensionMatchesCollectMethodsByAccess）：
 //
-//  1. 每个 swagger 顶层扩展 == ServiceAccess(service)（服务默认档）；
-//  2. 每个 operation 的有效扩展（显式否则继承顶层）== 策略 access 字符串；
+//  1. 每个 swagger 顶层扩展 == ServiceAccess(service)（服务默认 label）；
+//  2. 每个 operation 的有效扩展（显式否则继承顶层）== operation 的有效 label；
 //  3. operationId 按 LastIndex("_") 解析 RPC；"{N}" 数字后缀（additional_bindings
 //     生成，从 2 起编号）必须落在该 RPC 真实声明的绑定数内；
 //  4. 每个 operation 的 default 响应 $ref 必须命中（ErrorResponseRef 或动态查找）；
@@ -106,7 +106,7 @@ func swaggerAccessMatches(tb testing.TB, o SwaggerOptions) {
 		accessExt = AccessExtensionKey
 	}
 
-	accessOf := make(map[string]string)  // 全方法名 → access 字符串（来自 PolicySet）
+	accessOf := make(map[string]string)  // 全方法名 → access 字符串（来自 policy.Set）
 	defaultOf := make(map[string]string) // 服务全名 → 服务默认 access（来自 ServiceAccess）
 	byProtoPath := make(map[string]protoreflect.FileDescriptor, len(o.Files))
 	for _, fd := range o.Files {
@@ -121,12 +121,8 @@ func swaggerAccessMatches(tb testing.TB, o SwaggerOptions) {
 			defaultOf[svc] = def
 		}
 	}
-	for _, p := range o.Policies.Methods() {
-		as, ok := accessString(p.Access)
-		if !ok {
-			tb.Fatalf("method %s access 非法（%d）：策略表不应包含 UNSPECIFIED/未知档位", p.Method, int(p.Access))
-		}
-		accessOf[p.Method] = as
+	for _, p := range o.Policies.Operations() {
+		accessOf[p.ID] = p.EffectiveLabel()
 	}
 
 	seenMethods := make(map[string]int) // 全方法名 → 在 swagger 中出现的次数
@@ -328,24 +324,6 @@ func lowerPackagePrefix(s string) bool {
 		}
 	}
 	return true
-}
-
-// accessString 映射 authz.AccessLevel → swagger access 字符串。固定小写映射，
-// 不提供项目覆盖——项目扩展名不同只需改 AccessExtension。
-func accessString(l authz.AccessLevel) (string, bool) {
-	switch l {
-	case authz.AccessPublic:
-		return "public", true
-	case authz.AccessEndUser:
-		return "end_user", true
-	case authz.AccessServer:
-		return "server", true
-	case authz.AccessPermission:
-		return "permission", true
-	case authz.AccessSystem:
-		return "system", true
-	}
-	return "", false
 }
 
 // findMethodByOperationID 先按原名精确查找；未命中时按 additional_bindings 的

@@ -7,13 +7,16 @@ import (
 	"testing"
 )
 
-func TestNewMuxRequiresErrorHandler(t *testing.T) {
-	defer func() {
-		if recover() == nil {
-			t.Fatal("nil ErrorHandler 应在构造期 panic（fail-closed），而非等到首个错误请求")
-		}
-	}()
-	NewMux(MuxOptions{})
+func TestNewMuxDefaultsErrorHandler(t *testing.T) {
+	mux := NewMux(MuxOptions{})
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/definitely-not-registered", nil))
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Fatalf("Content-Type = %q, want default JSON error handler", ct)
+	}
+	if !strings.Contains(rec.Body.String(), "error_id") {
+		t.Fatalf("default error body missing error_id: %s", rec.Body.String())
+	}
 }
 
 func TestNewMuxWiresErrorHandlerAndMarshaler(t *testing.T) {

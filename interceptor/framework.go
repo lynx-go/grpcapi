@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/lynx-go/grpcapi/authz"
+	"github.com/lynx-go/grpcapi/policy"
 	"google.golang.org/grpc"
 )
 
@@ -33,7 +33,7 @@ func FrameworkExempt(fullMethod string) bool {
 // 中（框架豁免除外）。漏配的方法会被 auth 拦截器 fail-closed 拒绝，
 // 但在启动期直接报错以尽早暴露 proto 注解与注册实现之间的漂移。
 // 所有缺失方法聚合在一个 error 里，按字典序列出。
-func AssertAllRegisteredHavePolicy(srv *grpc.Server, set *authz.PolicySet) error {
+func AssertAllRegisteredHavePolicy(srv *grpc.Server, set *policy.Set) error {
 	var missing []string
 	for serviceName, info := range srv.GetServiceInfo() {
 		// 服务粒度豁免：框架服务整体不参与断言。
