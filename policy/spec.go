@@ -184,13 +184,16 @@ type Operation struct {
 	OperationID string
 	Streaming   bool
 	StreamAuth  StreamAuthMode
-	Metadata    map[string]string
+	// RequestFields 是请求消息全部字段名（字典序），供项目断言/迁移消费。
+	RequestFields []string
+	Metadata      map[string]string
 }
 
 // Clone 返回深拷贝。
 func (o Operation) Clone() Operation {
 	out := o
 	out.Policy = o.Policy.Clone()
+	out.RequestFields = append([]string(nil), o.RequestFields...)
 	if len(o.Metadata) > 0 {
 		out.Metadata = make(map[string]string, len(o.Metadata))
 		for k, v := range o.Metadata {

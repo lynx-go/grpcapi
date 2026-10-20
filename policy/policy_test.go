@@ -74,6 +74,9 @@ func TestBuildInheritanceAndLabels(t *testing.T) {
 	if len(shout.Policy.Require) != 1 || shout.Policy.Require[0].Kind != "role" {
 		t.Errorf("Shout policy = %+v", shout.Policy)
 	}
+	if got := shout.RequestFields; len(got) != 1 || got[0] != "text" {
+		t.Errorf("Shout request fields = %v, want [text]", got)
+	}
 
 	hear, ok := set.Get("/example.echo.v1.EchoService/Hear")
 	if !ok {

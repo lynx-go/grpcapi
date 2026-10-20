@@ -280,19 +280,34 @@ func buildOperation(
 		metadata = map[string]string{"preset": presetName}
 	}
 	op := Operation{
-		ID:          fullMethod,
-		Kind:        KindGRPC,
-		Service:     string(sd.FullName()),
-		API:         api,
-		Policy:      policy,
-		Exposure:    exposure,
-		Label:       label,
-		OperationID: opID,
-		Streaming:   streaming,
-		StreamAuth:  streamAuth,
-		Metadata:    metadata,
+		ID:            fullMethod,
+		Kind:          KindGRPC,
+		Service:       string(sd.FullName()),
+		API:           api,
+		Policy:        policy,
+		Exposure:      exposure,
+		Label:         label,
+		OperationID:   opID,
+		Streaming:     streaming,
+		StreamAuth:    streamAuth,
+		RequestFields: requestFields(md),
+		Metadata:      metadata,
 	}
 	return op, violations
+}
+
+func requestFields(md protoreflect.MethodDescriptor) []string {
+	input := md.Input()
+	if input == nil {
+		return nil
+	}
+	fields := input.Fields()
+	out := make([]string, 0, fields.Len())
+	for i := 0; i < fields.Len(); i++ {
+		out = append(out, string(fields.Get(i).Name()))
+	}
+	sort.Strings(out)
+	return out
 }
 
 func packageUnderAny(pkg string, prefixes []string) bool {
