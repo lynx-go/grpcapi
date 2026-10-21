@@ -152,6 +152,7 @@ Tier 1 仍可逐件组装 `gateway.NewMux` / `gateway.Dial` / `gateway.Register`
 ### 5. 启动断言
 
 ```go
+// srv 为逐件组装的 *grpc.Server（见 §3；server.New 已内置该断言）。
 if err := interceptor.AssertAllRegisteredHavePolicy(srv, set); err != nil {
     log.Fatal(err)
 }
@@ -196,7 +197,7 @@ guard.AssertRouteTable(t, srv.Routes(), guard.RouteTableOptions{Policies: set})
 ```
 
 旧 `SwaggerAccessMatches` / `SwaggerSnakeCaseProperties` / `SwaggerNoDefinition` 仍保留；
-新项目建议用 `Suite` + `Document`。
+新项目建议用 `guard.Run(SuiteConfig{...})` 组合 `Document` 断言。
 
 ## 策略速查
 
@@ -215,7 +216,10 @@ policy: { require: [ { kind: "tenant" values: ["acme"] } ] }
 - default scope 是精确 claim 匹配；`resource:op` 语义用 `policy/scope` 注册
   （兼容 v2 的 `resource.op`）。
 - `forbid` 是 deny-overrides。
-- `inherit_default: true` 表示方法策略与 service/file 默认按 AND 合并。
+- `inherit_default: true` 时方法策略与 service/file 默认合并：
+  `require`/`forbid` 跨层 AND（forbid 恒 deny-overrides）；`any_of` 的各组
+  直接并入备选列表——组间恒为 OR，继承不做跨层笛卡尔 AND。要在默认之上
+  做交集，把多组条件写进同一个 `any_of` 组（组内 AND）。
 
 ## proto 分发
 
@@ -227,8 +231,9 @@ deps:
   - buf.build/lynx-go/grpcapi
 ```
 
-proto 里 `import "grpcapi/v1/policy.proto"`。旧 `authz.proto` 仅作为迁移期
-legacy Provider 的输入保留，不面向新项目。
+proto 里 `import "grpcapi/v1/policy.proto"`。v3 已删除 `authz.proto`：旧注解
+按 [MIGRATION.md](./MIGRATION.md) 路径 A vendored 到项目侧，经 legacy
+Provider 消费，不面向新项目。
 
 ## 版本
 

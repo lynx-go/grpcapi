@@ -395,7 +395,11 @@ func (s *Server) buildHTTP(ctx context.Context, set *policy.Set, surf *surface.S
 		if ip == "" {
 			return nil
 		}
-		return metadata.Pairs("x-grpcapi-client-ip", ip)
+		// 解析结果同时以标准 XFF 形态下发：clientinfo 对合法 TCP peer
+		// 不再采信 x-grpcapi-client-ip（直连 gRPC 客户端可自设该键），
+		// 而是从该 XFF 右起回溯还原同一 IP；bufconn 路径 peer 非 IP，
+		// 仍走注入键。
+		return metadata.Pairs("x-grpcapi-client-ip", ip, "x-forwarded-for", ip)
 	}
 
 	root := http.NewServeMux()
@@ -591,11 +595,34 @@ func (s *Server) buildGroups(surf *surface.Surface) ([]*apiGroup, error) {
 		}
 	}
 	seenPrefix := make(map[string]string, len(groups))
-	for name, g := range groups {
-		if other, dup := seenPrefix[g.prefix]; dup {
-			return nil, fmt.Errorf("server: API groups %q and %q share prefix %q", other, name, g.prefix)
+	names := make([]string, 0, len(groups))
+	for name := range groups {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if other, dup := seenPrefix[groups[name].prefix]; dup {
+			return nil, fmt.Errorf("server: API groups %q and %q share prefix %q", other, name, groups[name].prefix)
 		}
-		seenPrefix[g.prefix] = name
+		seenPrefix[groups[name].prefix] = name
+	}
+	// 前缀遮蔽（GENERALIZATION §5.16「Prefix 不互相遮蔽」）：/v1 与
+	// /v1/admin 会让后一面的路由落在前一面的前缀之下，face 隔离失效。
+	// 边界按 path 段判定（/v1 与 /v1admin 不算遮蔽）；空串是默认面，
+	// 不参与。
+	for _, a := range names {
+		for _, b := range names {
+			if a == b {
+				continue
+			}
+			pa, pb := groups[a].prefix, groups[b].prefix
+			if pa == "" || pb == "" {
+				continue
+			}
+			if strings.HasPrefix(pa, pb+"/") {
+				return nil, fmt.Errorf("server: API group %q prefix %q is shadowed by %q prefix %q", a, pa, b, pb)
+			}
+		}
 	}
 	out := make([]*apiGroup, 0, len(groups))
 	for _, g := range groups {
@@ -760,6 +787,32 @@ func validateAuthChain(cfg Config, chain *interceptor.Chain, set *policy.Set) er
 	}
 	if hasProtectedStream && !cfg.AllowNoAuthz && !chain.HasStream(interceptor.StageAuthz) {
 		return fmt.Errorf("server: protected streaming methods exist but authz stage has no stream interceptor")
+	}
+	// 顺序校验：authz 必须位于 authn 之后，否则每个请求都在无 principal
+	// 的状态下判定（GENERALIZATION §5.16：自定义链顺序合法、authn/authz
+	// 位置正确）。Stage 按升序执行，比较在 Stages() 里的位置即可。
+	if !cfg.AllowNoAuthz {
+		authnIdx, authzIdx := -1, -1
+		for i, st := range chain.Stages() {
+			switch st.Name {
+			case interceptor.StageAuthn:
+				if st.Unary != nil {
+					authnIdx = i
+				}
+			case interceptor.StageAuthz:
+				if st.Unary != nil {
+					authzIdx = i
+				}
+			}
+		}
+		if authnIdx >= 0 && authzIdx >= 0 && authzIdx < authnIdx {
+			return fmt.Errorf("server: interceptor chain has authz stage before authn stage; authn must precede authz")
+		}
+	}
+	// 受保护流式方法存在时，authn stage 也必须提供 stream 实现；缺失会让
+	// 流式请求跳过认证，在 authz 处以 401 失败——fail-closed 但难以排查。
+	if hasProtectedStream && !cfg.AllowNoAuthenticator && chain.Has(interceptor.StageAuthn) && !chain.HasStream(interceptor.StageAuthn) {
+		return fmt.Errorf("server: protected streaming methods exist but authn stage has no stream interceptor")
 	}
 	return nil
 }

@@ -10,6 +10,7 @@ import (
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/lynx-go/grpcapi/example/echo/v1"
+	"github.com/lynx-go/grpcapi/interceptor"
 	"github.com/lynx-go/grpcapi/policy"
 	"github.com/lynx-go/grpcapi/policy/protopolicy"
 	"github.com/lynx-go/grpcapi/server"
@@ -272,5 +273,67 @@ func TestServerRejectsPolicyWithoutRegistration(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "without registration") {
 		t.Fatalf("error = %v, want unregistered policy error", err)
+	}
+}
+
+func TestServerRejectsShadowedPrefixes(t *testing.T) {
+	_, err := server.New(context.Background(), server.Config{
+		Policy: testSet(t),
+		APIs: []server.APIConfig{
+			{Name: "public", Prefix: "/v1", Services: []server.Registration{testRegistration(t)}},
+			{Name: "admin", Prefix: "/v1/admin"},
+		},
+		GRPCAddr:             "127.0.0.1:0",
+		HTTPAddr:             "127.0.0.1:0",
+		DisableHealth:        true,
+		AllowNoAuthenticator: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "shadowed") {
+		t.Fatalf("error = %v, want prefix shadow error", err)
+	}
+
+	// path 段边界：/v1 与 /v1admin 不构成遮蔽，应能通过装配。
+	if _, err := server.New(context.Background(), server.Config{
+		Policy: testSet(t),
+		APIs: []server.APIConfig{
+			{Name: "public", Prefix: "/v1", Services: []server.Registration{testRegistration(t)}},
+			{Name: "admin", Prefix: "/v1admin"},
+		},
+		GRPCAddr:             "127.0.0.1:0",
+		HTTPAddr:             "127.0.0.1:0",
+		DisableHealth:        true,
+		AllowNoAuthenticator: true,
+	}); err != nil {
+		t.Fatalf("boundary prefixes should not shadow: %v", err)
+	}
+}
+
+func TestServerRejectsAuthzBeforeAuthn(t *testing.T) {
+	trivial := func(ctx context.Context, req any, _ *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		return handler(ctx, req)
+	}
+	trivialStream := func(srv any, ss grpc.ServerStream, _ *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+		return handler(srv, ss)
+	}
+	// Assemble 按 Order 升序会拒绝乱序声明；自定义 Order 仍能组装出
+	// authz 先于 authn 执行的链，由 server 启动断言兜底。
+	chain, err := interceptor.Assemble(
+		interceptor.StageOf(interceptor.StageAuthz, 10, trivial, trivialStream),
+		interceptor.StageOf(interceptor.StageAuthn, 20, trivial, trivialStream),
+	)
+	if err != nil {
+		t.Fatalf("Assemble: %v", err)
+	}
+	_, err = server.New(context.Background(), server.Config{
+		Policy:               testSet(t),
+		Services:             []server.Registration{testRegistration(t)},
+		GRPCAddr:             "127.0.0.1:0",
+		HTTPAddr:             "127.0.0.1:0",
+		DisableHealth:        true,
+		AllowNoAuthenticator: true,
+		Chain:                chain,
+	})
+	if err == nil || !strings.Contains(err.Error(), "before authn") {
+		t.Fatalf("error = %v, want authz-before-authn error", err)
 	}
 }

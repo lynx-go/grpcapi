@@ -1,7 +1,7 @@
 version: v2
 # 全 workspace 生成：file placement 完全由各 proto 的 go_package 经
 # protoc-gen-go / protoc-gen-go-grpc 的 module= 前缀裁剪决定——
-#   - proto 模块 policy.proto / legacy authz.proto
+#   - proto 模块 policy.proto
 #       （go_package .../genproto/grpcapi/v1）
 #       → genproto/grpcapi/v1/*.pb.go；
 #   - example（go_package .../example/echo/v1）

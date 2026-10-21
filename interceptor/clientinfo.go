@@ -23,7 +23,12 @@ type ClientInfoConfig struct {
 // ClientInfoInterceptor 从 gRPC metadata（经 grpc-gateway 由 HTTP 头
 // 透传）提取客户端 IP 与 User-Agent 注入请求 ctx。X-Forwarded-For /
 // X-Real-Ip 仅在直连 peer 命中可信代理网段时被采纳（且 XFF 逐跳回溯、
-// 截断客户端伪造跳），否则一律使用 gRPC peer 地址。
+// 截断客户端伪造跳），否则一律使用 gRPC peer 地址。gateway 注入的
+// x-grpcapi-client-ip 仅在 peer 缺失或非 IP 形态（in-process/bufconn）
+// 时采信；合法 TCP peer 一律走 XFF 解析——直连 gRPC 客户端可自设该
+// metadata，按 peer 网段采信等于给同网段调用方一条伪造来源的旁路。
+// 配套地，server 的 annotator 会把解析出的客户端 IP 以标准 XFF 形态
+// 下发，NetworkDial（gateway 经真实回环连 gRPC）路径因此不丢真实来源。
 type ClientInfoInterceptor struct {
 	trusted *TrustedProxies
 }
@@ -73,8 +78,9 @@ func (c *ClientInfoInterceptor) extractClientInfo(ctx context.Context, md metada
 	injected := lastMetadataValue(md, "x-grpcapi-client-ip")
 	var ip string
 	switch {
-	case injected != "" && (peerIP == "" || !validIP(peerIP) || c.trusted.Trusted(peerIP)):
-		// gateway 注入的可信 client-ip；in-process/bufconn 的假 peer 下直接采信。
+	case injected != "" && (peerIP == "" || !validIP(peerIP)):
+		// gateway 注入的可信 client-ip；仅 in-process/bufconn（peer 缺失
+		// 或非 IP 形态）时采信，见类型注释。
 		ip = injected
 	case peerIP != "":
 		ip = c.trusted.ResolveClientIP(peerIP, xff, realIP)

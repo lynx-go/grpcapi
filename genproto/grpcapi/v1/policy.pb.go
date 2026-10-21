@@ -317,7 +317,8 @@ func (x *ServiceSpec) GetLabel() string {
 // MethodSpec 是方法级声明。
 type MethodSpec struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// 声明则默认完全覆盖 service/file 默认；inherit_default 时按 AND 合并。
+	// 声明则默认完全覆盖 service/file 默认；inherit_default 时合并：
+	// require/forbid 跨层 AND，any_of 各组并列为备选（组间恒为 OR）。
 	Policy   *Policy  `protobuf:"bytes,1,opt,name=policy,proto3" json:"policy,omitempty"`
 	Exposure Exposure `protobuf:"varint,2,opt,name=exposure,proto3,enum=grpcapi.v1.Exposure" json:"exposure,omitempty"`
 	// 文档/OpenAPI 的稳定标签；空 = 自动派生。
@@ -327,7 +328,8 @@ type MethodSpec struct {
 	// 仅元数据；幂等行为由可选 idempotency 模块提供。
 	Idempotent  bool         `protobuf:"varint,5,opt,name=idempotent,proto3" json:"idempotent,omitempty"`
 	Deprecation *Deprecation `protobuf:"bytes,6,opt,name=deprecation,proto3" json:"deprecation,omitempty"`
-	// true = 与 service/file 默认按 AND 合并；false = 整体替换。
+	// true = 与 service/file 默认合并：require/forbid 跨层 AND，any_of
+	// 各组并入备选列表（组间恒为 OR）；false = 整体替换。
 	InheritDefault bool `protobuf:"varint,7,opt,name=inherit_default,json=inheritDefault,proto3" json:"inherit_default,omitempty"`
 	// 仅流式方法有效；默认 OPEN。
 	StreamAuth    StreamAuthMode `protobuf:"varint,8,opt,name=stream_auth,json=streamAuth,proto3,enum=grpcapi.v1.StreamAuthMode" json:"stream_auth,omitempty"`

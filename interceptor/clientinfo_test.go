@@ -149,6 +149,57 @@ func TestClientInfoWithoutPeerFallsBackToHeaders(t *testing.T) {
 	}
 }
 
+func TestClientInfoInjectedKeyScoping(t *testing.T) {
+	// x-grpcapi-client-ip 是 server annotator 的内部注入键：仅 peer 缺失
+	// 或非 IP 形态（in-process/bufconn）时采信；合法 TCP peer 即使命中
+	// 可信网段也必须走 XFF 解析，否则直连 gRPC 客户端可自设该键伪造来源。
+	t.Run("no peer adopts injected", func(t *testing.T) {
+		ic := interceptor.NewClientInfo(interceptor.ClientInfoConfig{}).Unary()
+		ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(
+			"x-grpcapi-client-ip", "198.51.100.7",
+		))
+		if got := invokeClientInfo(t, ic, ctx); got.IP != "198.51.100.7" {
+			t.Fatalf("IP = %q, want injected %q", got.IP, "198.51.100.7")
+		}
+	})
+
+	t.Run("untrusted peer ignores injected", func(t *testing.T) {
+		ic := interceptor.NewClientInfo(interceptor.ClientInfoConfig{}).Unary()
+		ctx := metadata.NewIncomingContext(peerCtx(context.Background(), "203.0.113.9", 51000), metadata.Pairs(
+			"x-grpcapi-client-ip", "6.6.6.6",
+		))
+		if got := invokeClientInfo(t, ic, ctx); got.IP != "203.0.113.9" {
+			t.Fatalf("IP = %q, want peer %q (forged injected key must be ignored)", got.IP, "203.0.113.9")
+		}
+	})
+
+	t.Run("trusted peer ignores injected and resolves gateway xff", func(t *testing.T) {
+		ic := interceptor.NewClientInfo(interceptor.ClientInfoConfig{
+			TrustedProxies: []string{"127.0.0.0/8"},
+		}).Unary()
+		ctx := metadata.NewIncomingContext(peerCtx(context.Background(), "127.0.0.1", 51000), metadata.Pairs(
+			"x-grpcapi-client-ip", "6.6.6.6",
+			// server annotator 以标准 XFF 形态下发的解析结果。
+			"x-forwarded-for", "198.51.100.5",
+		))
+		if got := invokeClientInfo(t, ic, ctx); got.IP != "198.51.100.5" {
+			t.Fatalf("IP = %q, want gateway-resolved %q", got.IP, "198.51.100.5")
+		}
+	})
+
+	t.Run("trusted peer without xff falls back to peer", func(t *testing.T) {
+		ic := interceptor.NewClientInfo(interceptor.ClientInfoConfig{
+			TrustedProxies: []string{"127.0.0.0/8"},
+		}).Unary()
+		ctx := metadata.NewIncomingContext(peerCtx(context.Background(), "127.0.0.1", 51000), metadata.Pairs(
+			"x-grpcapi-client-ip", "6.6.6.6",
+		))
+		if got := invokeClientInfo(t, ic, ctx); got.IP != "127.0.0.1" {
+			t.Fatalf("IP = %q, want peer %q (no XFF to resolve)", got.IP, "127.0.0.1")
+		}
+	})
+}
+
 func TestClientInfoInvalidTrustedProxyFailsClosed(t *testing.T) {
 	// 配置含无法解析的 CIDR：整个信任集作废，转发头一律不采纳。
 	ic := interceptor.NewClientInfo(interceptor.ClientInfoConfig{

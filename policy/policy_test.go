@@ -132,6 +132,43 @@ func TestInheritDefault(t *testing.T) {
 	}
 }
 
+func TestInheritDefaultAnyOfUnionsAlternatives(t *testing.T) {
+	// 语义钉死（README「策略速查」）：inherit_default 合并时 require 跨层
+	// AND，any_of 各组并入备选列表（组间恒为 OR，不做跨层笛卡尔 AND）。
+	provider := fakeProvider{
+		file: policy.FileSpec{DefaultExposure: policy.ExposureInternal},
+		services: map[protoreflect.FullName]policy.ServiceSpec{
+			"example.echo.v1.EchoService": {
+				DefaultPolicy: &policy.Policy{AnyOf: [][]policy.Requirement{
+					{{Kind: "role", Values: []string{"admin"}}},
+				}},
+			},
+		},
+		methods: map[protoreflect.FullName]policy.MethodSpec{
+			"example.echo.v1.EchoService.Shout": {
+				Policy: &policy.Policy{AnyOf: [][]policy.Requirement{
+					{{Kind: "role", Values: []string{"viewer"}}},
+				}},
+				InheritDefault: true,
+			},
+		},
+	}
+	set, err := policy.Build(context.Background(), policy.FromFiles(echov1.File_echo_proto), policy.Options{
+		Provider: provider,
+		Registry: policy.DefaultRegistry(),
+	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	shout, _ := set.Get("/example.echo.v1.EchoService/Shout")
+	if len(shout.Policy.AnyOf) != 2 {
+		t.Fatalf("any_of groups = %+v, want both alternatives (admin) and (viewer)", shout.Policy.AnyOf)
+	}
+	if len(shout.Policy.Require) != 0 {
+		t.Errorf("require = %+v, want empty", shout.Policy.Require)
+	}
+}
+
 func TestBuildValidationErrors(t *testing.T) {
 	baseFile := policy.FileSpec{DefaultExposure: policy.ExposurePublic}
 	tests := []struct {

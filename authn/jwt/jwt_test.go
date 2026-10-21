@@ -67,6 +67,32 @@ func TestExpiredToken(t *testing.T) {
 	}
 }
 
+func TestKindClaimCannotOverrideConfig(t *testing.T) {
+	// kind 只由服务端配置决定：token 自带 kind claim 不得切换 principal
+	// kind（共享 IdP 下可影响的 claim 是提权面）。
+	key := []byte("secret")
+	signed, _ := jwtlib.NewWithClaims(jwtlib.SigningMethodHS256, jwtlib.MapClaims{
+		"sub":  "u1",
+		"kind": "server",
+		"exp":  time.Now().Add(time.Hour).Unix(),
+	}).SignedString(key)
+	a, err := jwt.New(jwt.Config{
+		KeyFunc:                func(*jwtlib.Token) (any, error) { return key, nil },
+		ValidMethods:           []string{"HS256"},
+		AllowMissingExpiration: false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := a.Authenticate(context.Background(), authn.Credentials{Bearer: []string{signed}})
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	if p.Kind != "user" {
+		t.Fatalf("kind = %q, want server-configured %q (token kind claim must be ignored)", p.Kind, "user")
+	}
+}
+
 func TestJWKS(t *testing.T) {
 	priv, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {

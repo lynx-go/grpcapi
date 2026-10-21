@@ -9,14 +9,14 @@ import (
 	"google.golang.org/grpc"
 )
 
-// frameworkServicePrefixes 是不参与业务 authz 断言的 gRPC 框架内置服务
-// 白名单：grpc.health.v1.Health 由运行时注册用于健康检查，
-// grpc.reflection.* 用于 server reflection。它们不是业务 API、不携带
-// 业务 authz 注解，由部署层网络策略保护。validate 拦截器复用同一白名单。
-var frameworkServicePrefixes = []string{
-	"grpc.health.v1.",
-	"grpc.reflection.",
-}
+// frameworkServicePrefixes 复用 policy.DefaultFrameworkPrefixes，保持单一
+// 名单（此前 interceptor 侧缺 grpc.channelz.v1.，channelz 方法 authz 豁免
+// 但启动断言/validate 不豁免，两份名单已漂移）。
+//
+// grpc.health.v1.Health 由运行时注册用于健康检查，grpc.reflection.* 用于
+// server reflection；它们不是业务 API、不携带业务 authz 注解，由部署层
+// 网络策略保护。validate 拦截器复用同一名单。
+var frameworkServicePrefixes = policy.DefaultFrameworkPrefixes
 
 // FrameworkExempt 判断 fullMethod（"/pkg.Svc/Method" 形态）是否属于
 // 框架内置服务，此类方法不要求 authz 注解与请求校验。

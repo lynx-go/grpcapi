@@ -146,10 +146,10 @@ func (a *Authenticator) Authenticate(ctx context.Context, c authn.Credentials) (
 	if id == "" {
 		return nil, status.Error(codes.Unauthenticated, "token subject is missing")
 	}
+	// kind 只由服务端配置决定，不采信 token 的 kind claim——共享 IdP 下
+	// 用户可影响的 claim 一旦能切换 principal kind 就是提权面。多 kind
+	// 场景部署多个不同 Kind/issuer 的 Authenticator。
 	kind := a.kind
-	if k := claims.String("kind"); k != "" {
-		kind = k
-	}
 	p := &principal.Principal{
 		ID:     id,
 		Kind:   kind,

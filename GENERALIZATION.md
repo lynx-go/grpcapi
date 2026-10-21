@@ -24,7 +24,7 @@
 
 ### 0.2 三个能力轴
 
-1. **方便**：proto 侧有糖，Go 侧有默认值和一行装配，测试侧有 `testkit` 和 `guard.Suite`。
+1. **方便**：proto 侧有糖，Go 侧有默认值和一行装配，测试侧有 `testkit` 和 `guard.Run(SuiteConfig)`。
 2. **通用**：核心只依赖「描述符 + 不可变 IR + 谓词求值」，不依赖 torchwood 的凭证分类法，也不依赖 grpc-gateway。
 3. **特化**：每一个可能因项目而异的点都有明确 SPI，且默认实现可替换；项目不需要 fork。
 
@@ -45,7 +45,7 @@
 4. **渐进披露**：Day 1 只需要理解四个概念；Provider/Preset/Kind/Decider 是第二周以后的事。
 5. **错误可行动**：构建/启动/守卫错误必须指出「哪个方法/路由、哪条策略、怎么修」；聚合全部违例，不挤牙膏。
 6. **无全局魔法**：没有 `init()` 注册表、没有隐藏单例；依赖显式传递。
-7. **测试是一等公民**：`testkit` + `guard.Suite` 与运行时 API 同等重要。
+7. **测试是一等公民**：`testkit` + `guard.Run(SuiteConfig)` 与运行时 API 同等重要。
 8. **安全默认**：方便不能以 fail-open 为代价；public 必须显式，未知字段默认拒绝。
 9. **路由装配是一等能力**：路由仍由 proto Service + `google.api.http` 定义；库负责把 gRPC + gateway 自动装配好，原生 HTTP 路由只作为少量逃生口。
 10. **代码即文档**：不要求 codegen 才能跑通；生成器只消除样板，不承载隐藏语义。
@@ -68,7 +68,7 @@ Day 1 只需要四个概念：
 
 ```text
 Day 1     Service + Route + Policy + Principal + server.New
-Week 1    testkit + guard.Suite + 自定义 Authenticator
+Week 1    testkit + guard.Run(SuiteConfig) + 自定义 Authenticator
 Week 2    Preset + 自定义 RequirementKind + 路由分组/中间件
 Month 1   Provider + Decider + ResourceResolver + 多 API
 平台化    OPA/Cerbos/SpiceDB、Connect、自定义传输/文档管线
@@ -411,7 +411,7 @@ syntax = "proto3";
 package grpcapi.v1;
 import "google/protobuf/descriptor.proto";
 
-option go_package = "github.com/lynx-go/grpcapi/gen/grpcapi/v1;grpcapiv1";
+option go_package = "github.com/lynx-go/grpcapi/genproto/grpcapi/v1;grpcapiv1";
 
 message APISpec {
   string api = 1;              // public / internal / partner；空 = 默认面
@@ -1499,7 +1499,7 @@ func RenderMatrix(set *policy.Set, o MatrixOptions) ([]byte, error)
 func AssertDocUnchanged(t *testing.T, rendered []byte, path string)
 ```
 
-### 5.15 `guard.Suite`：一条命令跑全部守卫
+### 5.15 `guard.Run(SuiteConfig)`：一条命令跑全部守卫
 
 ```go
 type SuiteConfig struct {
@@ -2071,6 +2071,11 @@ method.label > preset > 自动派生
 effective = AND(default_policy, method_policy)
 ```
 
+AND 只作用于 `require`（全部满足）与 `forbid`（恒 deny-overrides）；`any_of`
+的各组直接并入备选列表——组间恒为 OR，继承不做跨层笛卡尔 AND（`any_of`
+本身就是 OR 语义，继承是「多一组备选」而不是「多一道交集门槛」）。需要在
+默认之上做交集时，把多组条件写进同一个 `any_of` 组（组内 AND）。
+
 `inherit_default` 与 `anonymous` 互斥；`anonymous` 只能作为整体替换出现。这样既
 避免「以为收紧了，其实放宽了」的事故，也避免每个方法重复默认条件。
 
@@ -2481,7 +2486,7 @@ grpc-gateway 的版本耦合点（升级必须跑集成测试）：
 - proto：`authenticated` + `roles` 糖。
 - Go：`server.New` + 默认 registry/chain。
 - 认证：一个 JWT 或内网 mTLS 认证器。
-- 守卫：`guard.Suite` 只跑 policy + naming。
+- 守卫：`guard.Run(SuiteConfig)` 只跑 policy + naming。
 - 目标：20~30 行接入，不引入 gateway 以外的依赖。
 
 ### 10.2 产品 API
@@ -2499,7 +2504,7 @@ grpc-gateway 的版本耦合点（升级必须跑集成测试）：
 - 策略来源：自定义 `Provider`（配置中心/数据库）+ preset。
 - 授权：`Decider` 路由到 Cerbos/SpiceDB；`ResourceResolver` 取对象。
 - 传输：gRPC + 多个 HTTP mux；未来 Connect。
-- 守卫：每个 API 面独立 `guard.Suite`；manifest diff 进 CI。
+- 守卫：每个 API 面独立 `guard.Run(SuiteConfig)`；manifest diff 进 CI。
 - 目标：特化能力全开，但核心包不变。
 
 ### 10.4 proto Service 为主 + 少量 extra route 的产品 API
@@ -2571,7 +2576,6 @@ srv, err := server.New(ctx, server.Config{
 
 **v3.0 明确不做：**
 
-- OpenAPI v3 loader（v3.1）
 - Connect/HTTP-only 传输适配器
 - 每个 API 面独立 gRPC server/端口
 - 运行时加载 manifest 作为策略源
@@ -2848,7 +2852,7 @@ OPA/Cerbos/SpiceDB、Connect、OpenAPI v3、审计/限流实现仍可后置。
    - codegen 只生成注册样板与可选的 scope/permission 常量，不生成策略逻辑。
 
 2. **多 API 文档**
-   - `server.APIConfig.Docs fs.FS`；`guard.Suite` 每个 API 跑一次。
+   - `server.APIConfig.Docs fs.FS`；`guard.Run(SuiteConfig)` 每个 API 跑一次。
    - `/docs/<api>/openapi.json` 比单个 `/docs/openapi.json` 更清晰。
 
 3. **manifest 稳定性**

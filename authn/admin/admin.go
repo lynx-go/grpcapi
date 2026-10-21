@@ -2,6 +2,10 @@
 //
 // admin 角色写入独立的 admin_roles claim，不混入普通 roles，避免
 // 「JWT 带了 admin role 就自动成为后台管理员」的权限混淆。
+//
+// store 有记录时 store 是唯一权威：admin 角色整体替换（记录无角色 =
+// 明确撤权），token/session 自带的 admin_roles 不参与合并；无记录时
+// 才放行凭证自带 claim（供无 store 的部署走 IdP 签发的 admin_roles）。
 package admin
 
 import (
@@ -86,12 +90,18 @@ func (e *Enricher) Enrich(ctx context.Context, p *principal.Principal) error {
 		} else {
 			p.Claims = make(map[string][]string)
 		}
-		p.Claims[e.suspendedClaim] = union(p.Claims[e.suspendedClaim], []string{"true"})
-	} else if len(info.Roles) > 0 {
+		p.Claims[e.suspendedClaim] = []string{"true"}
+	} else {
+		// store 权威：记录存在时整体替换，凭证自带的 admin 角色不参与
+		// 合并（见包注释）；记录无角色 = 明确撤权。
 		if p.Claims == nil {
 			p.Claims = make(map[string][]string)
 		}
-		p.Claims[e.claim] = union(p.Claims[e.claim], info.Roles)
+		if len(info.Roles) > 0 {
+			p.Claims[e.claim] = append([]string(nil), info.Roles...)
+		} else {
+			delete(p.Claims, e.claim)
+		}
 	}
 	if len(info.Attrs) > 0 {
 		if p.Attrs == nil {
@@ -104,19 +114,6 @@ func (e *Enricher) Enrich(ctx context.Context, p *principal.Principal) error {
 		}
 	}
 	return nil
-}
-
-func union(a, b []string) []string {
-	seen := make(map[string]struct{}, len(a)+len(b))
-	out := make([]string, 0, len(a)+len(b))
-	for _, v := range append(append([]string(nil), a...), b...) {
-		if _, dup := seen[v]; dup {
-			continue
-		}
-		seen[v] = struct{}{}
-		out = append(out, v)
-	}
-	return out
 }
 
 var _ authn.Enricher = (*Enricher)(nil)

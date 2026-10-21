@@ -31,7 +31,8 @@ message ServiceSpec {
 
 // MethodSpec 是方法级声明。
 message MethodSpec {
-  // 声明则默认完全覆盖 service/file 默认；inherit_default 时按 AND 合并。
+  // 声明则默认完全覆盖 service/file 默认；inherit_default 时合并：
+  // require/forbid 跨层 AND，any_of 各组并列为备选（组间恒为 OR）。
   Policy policy = 1;
   Exposure exposure = 2;
   // 文档/OpenAPI 的稳定标签；空 = 自动派生。
@@ -41,7 +42,8 @@ message MethodSpec {
   // 仅元数据；幂等行为由可选 idempotency 模块提供。
   bool idempotent = 5;
   Deprecation deprecation = 6;
-  // true = 与 service/file 默认按 AND 合并；false = 整体替换。
+  // true = 与 service/file 默认合并：require/forbid 跨层 AND，any_of
+  // 各组并入备选列表（组间恒为 OR）；false = 整体替换。
   bool inherit_default = 7;
   // 仅流式方法有效；默认 OPEN。
   StreamAuthMode stream_auth = 8;
