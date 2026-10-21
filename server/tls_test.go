@@ -18,6 +18,7 @@ import (
 	"time"
 
 	echov1 "github.com/lynx-go/grpcapi/example/echo/v1"
+	"github.com/lynx-go/grpcapi/gateway"
 	"github.com/lynx-go/grpcapi/server"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -62,6 +63,134 @@ func testTLSConfig(t *testing.T) *tls.Config {
 		RootCAs:      pool,
 		ServerName:   "localhost",
 		MinVersion:   tls.VersionTLS12,
+	}
+}
+
+func TestInProcessGatewayIgnoresGRPCOptionsCredentials(t *testing.T) {
+	tlsCfg := testTLSConfig(t)
+	s, err := server.New(context.Background(), server.Config{
+		Policy:               testSet(t),
+		Services:             []server.Registration{testRegistration(t)},
+		GRPCAddr:             "127.0.0.1:0",
+		HTTPAddr:             "127.0.0.1:0",
+		GRPCOptions:          []grpc.ServerOption{grpc.Creds(credentials.NewTLS(tlsCfg))},
+		DisableHealth:        true,
+		AllowNoAuthenticator: true,
+	})
+	if err != nil {
+		t.Fatalf("server.New: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() { errCh <- s.Run(ctx) }()
+	defer func() {
+		cancel()
+		select {
+		case <-errCh:
+		case <-time.After(5 * time.Second):
+			t.Error("server did not shut down")
+		}
+	}()
+
+	var httpAddr string
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		_, httpAddr = s.Addrs()
+		if httpAddr != "" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if httpAddr == "" {
+		t.Fatal("server did not start")
+	}
+	var resp *http.Response
+	for time.Now().Before(deadline) {
+		resp, err = http.Get("http://" + httpAddr + "/v1/echo:ping")
+		if err == nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("HTTP GET: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "pong") {
+		t.Fatalf("ping status=%d body=%s", resp.StatusCode, body)
+	}
+}
+
+func TestNetworkDialTLSGatewayUsesExplicitClientConfig(t *testing.T) {
+	tlsCfg := testTLSConfig(t)
+	serverTLS := &tls.Config{Certificates: tlsCfg.Certificates, MinVersion: tls.VersionTLS12}
+	clientTLS := &tls.Config{RootCAs: tlsCfg.RootCAs, ServerName: "localhost", MinVersion: tls.VersionTLS12}
+
+	extLis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ext := grpc.NewServer(grpc.Creds(credentials.NewTLS(serverTLS)))
+	echov1.RegisterEchoServiceServer(ext, echoImpl{})
+	go func() { _ = ext.Serve(extLis) }()
+	defer ext.Stop()
+
+	s, err := server.New(context.Background(), server.Config{
+		Policy:               testSet(t),
+		Services:             []server.Registration{testRegistration(t)},
+		HTTPAddr:             "127.0.0.1:0",
+		GRPCAddr:             extLis.Addr().String(),
+		TLS:                  serverTLS,
+		NetworkDial:          true,
+		Dial:                 gateway.DialConfig{TLS: clientTLS},
+		DisableGRPC:          true,
+		DisableHealth:        true,
+		AllowNoAuthenticator: true,
+	})
+	if err != nil {
+		t.Fatalf("server.New: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() { errCh <- s.Run(ctx) }()
+	defer func() {
+		cancel()
+		select {
+		case <-errCh:
+		case <-time.After(5 * time.Second):
+			t.Error("server did not shut down")
+		}
+	}()
+
+	var httpAddr string
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		_, httpAddr = s.Addrs()
+		if httpAddr != "" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if httpAddr == "" {
+		t.Fatal("server did not start")
+	}
+	client := &http.Client{Transport: &http.Transport{TLSClientConfig: clientTLS}}
+	var resp *http.Response
+	for time.Now().Before(deadline) {
+		resp, err = client.Get("https://" + httpAddr + "/v1/echo:ping")
+		if err == nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("HTTPS gateway GET: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "pong") {
+		t.Fatalf("ping status=%d body=%s", resp.StatusCode, body)
 	}
 }
 

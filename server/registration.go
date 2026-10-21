@@ -24,7 +24,11 @@ type Registration struct {
 	API  string
 	Name string
 
-	Descriptor   protoreflect.ServiceDescriptor
+	Descriptor protoreflect.ServiceDescriptor
+	// RegisterGRPC 注册实现到给定 server。TLS + 进程内 gateway 时会同时
+	// 创建 external(TLS) 与 internal(plaintext) 两个 server，因此本回调
+	// 可能被调用两次；必须复用同一个 service 实例，不要每次新建带状态
+	// 的对象，否则 gRPC 与 gateway 会看到两份状态。
 	RegisterGRPC func(*grpc.Server)
 	RegisterHTTP HTTPRegisterFunc
 	// AllowAPIMismatch 显式允许 API 面不一致（默认 false）。
@@ -126,9 +130,6 @@ func (r ExtraRoute) operation() (policy.Operation, error) {
 	p := policy.Policy{Anonymous: true}
 	if r.Policy != nil {
 		p = r.Policy.Clone()
-	}
-	if err := policy.Validate(p); err != nil {
-		return policy.Operation{}, fmt.Errorf("extra route %s %s: %w", r.Method, r.Path, err)
 	}
 	exposure := r.Exposure
 	if exposure == policy.ExposureUnspecified {

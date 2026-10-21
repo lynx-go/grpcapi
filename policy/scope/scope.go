@@ -130,6 +130,9 @@ func Parse(raw []string) (Set, error) {
 
 // Satisfies 报告集合是否允许 resource/op；op 为空表示只要求资源。
 // 通配符按放行处理；需要严格模式用 satisfies(..., false)。
+//
+// resource-only token（如 "notes"）沿用 v2 语义：匹配该资源的任意方向，
+// 包括 admin。需要最小权限时必须写 "notes:read"/"notes:write"。
 func (s Set) Satisfies(resource, op string) bool {
 	return s.satisfies(resource, op, true)
 }

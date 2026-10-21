@@ -50,12 +50,13 @@ func testRegistration(t *testing.T) server.Registration {
 	if desc == nil {
 		t.Fatal("EchoService descriptor missing")
 	}
+	impl := echoImpl{}
 	return server.Registration{
 		API:        "public",
 		Name:       "EchoService",
 		Descriptor: desc,
 		RegisterGRPC: func(s *grpc.Server) {
-			echov1.RegisterEchoServiceServer(s, echoImpl{})
+			echov1.RegisterEchoServiceServer(s, impl)
 		},
 		RegisterHTTP: func(ctx context.Context, mux *runtime.ServeMux, conn grpc.ClientConnInterface) error {
 			return echov1.RegisterEchoServiceHandlerClient(ctx, mux, echov1.NewEchoServiceClient(conn))
@@ -206,6 +207,47 @@ func TestServerRejectsExtraRouteShadowingPrefixedProtoRoute(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "conflicts with proto route") {
 		t.Fatalf("error = %v, want prefixed route conflict", err)
+	}
+}
+
+func TestExtraRouteSupportsCustomRequirementKind(t *testing.T) {
+	reg := policy.DefaultRegistry()
+	if err := reg.Register(policy.RequirementKind{
+		Name:         "tenant",
+		DefaultMatch: policy.MatchAny,
+		Evaluate: func(_ context.Context, ec policy.EvalContext, req policy.Requirement) (bool, error) {
+			if ec.Principal == nil {
+				return false, nil
+			}
+			got := ec.Principal.Claim("tenant")
+			for _, want := range req.Values {
+				for _, v := range got {
+					if v == want {
+						return true, nil
+					}
+				}
+			}
+			return false, nil
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	set, err := policy.NewSetWithRegistry(reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = server.New(context.Background(), server.Config{
+		Policy: set,
+		ExtraRoutes: []server.ExtraRoute{
+			server.GET("/tenant", http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).
+				Require(policy.Policy{Require: []policy.Requirement{{Kind: "tenant", Values: []string{"acme"}}}}),
+		},
+		DisableGRPC:          true,
+		DisableHealth:        true,
+		AllowNoAuthenticator: true,
+	})
+	if err != nil {
+		t.Fatalf("custom kind ExtraRoute rejected: %v", err)
 	}
 }
 

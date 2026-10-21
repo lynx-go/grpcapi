@@ -49,7 +49,14 @@ type Config struct {
 	DisableHTTP bool
 	TLS         *tls.Config
 
-	GRPCOptions           []grpc.ServerOption
+	// GRPCOptions 应用于 external server（无独立 internal 时也应用于单
+	// server）。非空时内部 gateway 使用独立的 plaintext server，避免把
+	// grpc.Creds 等传输选项带到 bufconn。
+	GRPCOptions []grpc.ServerOption
+	// InternalGRPCOptions 只用于独立 plaintext internal server（TLS 或
+	// GRPCOptions 非空时）。不要把 grpc.Creds 放这里，否则 bufconn gateway
+	// 会握手失败。
+	InternalGRPCOptions   []grpc.ServerOption
 	MaxRecvMsgSize        int
 	MaxSendMsgSize        int
 	HTTPReadHeaderTimeout time.Duration
@@ -286,8 +293,9 @@ func (s *Server) buildGRPC() error {
 		s.registerGRPC(s.externalServer)
 	}
 	if !s.cfg.DisableHTTP {
-		// TLS 外部 server 不能同时服务明文 bufconn；用独立的内部 server。
-		if s.cfg.TLS == nil && s.externalServer != nil {
+		// TLS/Creds 外部 server 不能同时服务明文 bufconn；用独立的内部
+		// server。GRPCOptions 可能包含 grpc.Creds，因此非空时也不共用。
+		if s.cfg.TLS == nil && len(s.cfg.GRPCOptions) == 0 && s.externalServer != nil {
 			s.internalServer = s.externalServer
 		} else {
 			s.internalServer = s.newGRPCServer(false)
@@ -307,7 +315,11 @@ func (s *Server) newGRPCServer(withTLS bool) *grpc.Server {
 		grpc.MaxSendMsgSize(s.cfg.MaxSendMsgSize),
 	)
 	opts = append(opts, s.chain.ServerOptions()...)
-	opts = append(opts, s.cfg.GRPCOptions...)
+	if withTLS {
+		opts = append(opts, s.cfg.GRPCOptions...)
+	} else {
+		opts = append(opts, s.cfg.InternalGRPCOptions...)
+	}
 	return grpc.NewServer(opts...)
 }
 
@@ -346,7 +358,13 @@ func (s *Server) buildHTTP(ctx context.Context, set *policy.Set, surf *surface.S
 	if s.cfg.NetworkDial {
 		cfg := s.cfg.Dial
 		if cfg.TLS == nil && s.cfg.TLS != nil {
-			cfg.TLS = s.cfg.TLS
+			// Config.TLS 是服务端配置；只复制客户端需要的信任字段，绝不
+			// 把 Certificates/ClientAuth 当成客户端凭证。
+			cfg.TLS = &tls.Config{
+				RootCAs:    s.cfg.TLS.RootCAs,
+				ServerName: s.cfg.TLS.ServerName,
+				MinVersion: s.cfg.TLS.MinVersion,
+			}
 		}
 		conn, err = gateway.Dial(ctx, s.cfg.GRPCAddr, cfg)
 		if err != nil {

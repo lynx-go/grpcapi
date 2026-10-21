@@ -384,6 +384,74 @@ func TestInheritDefaultExpandsDefaultPreset(t *testing.T) {
 	}
 }
 
+func TestInheritDefaultAnonymousForbid(t *testing.T) {
+	provider := fakeProvider{
+		file: policy.FileSpec{
+			DefaultPolicy:   &policy.Policy{Anonymous: true},
+			DefaultExposure: policy.ExposurePublic,
+		},
+		methods: map[protoreflect.FullName]policy.MethodSpec{
+			"example.echo.v1.EchoService.Shout": {
+				Policy: &policy.Policy{Forbid: []policy.Requirement{
+					{Kind: "role", Match: policy.MatchAny, Values: []string{"banned"}},
+				}},
+				InheritDefault: true,
+			},
+		},
+	}
+	set, err := policy.Build(context.Background(), policy.FromFiles(echov1.File_echo_proto), policy.Options{
+		Provider: provider,
+		Registry: policy.DefaultRegistry(),
+	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	op, ok := set.Get("/example.echo.v1.EchoService/Shout")
+	if !ok {
+		t.Fatal("Shout missing")
+	}
+	if !op.Policy.Anonymous || len(op.Policy.Forbid) != 1 {
+		t.Fatalf("Shout policy = %+v, want anonymous + forbid", op.Policy)
+	}
+}
+
+func TestSetConstructorsValidatePolicies(t *testing.T) {
+	bad := policy.Operation{
+		ID: "/pkg.Svc/Get", Kind: policy.KindGRPC,
+		Exposure: policy.ExposureInternal,
+		Policy:   policy.Policy{Require: []policy.Requirement{{Kind: "role"}}},
+	}
+	if _, err := policy.NewSetWithRegistry(policy.DefaultRegistry(), bad); err == nil {
+		t.Fatal("NewSetWithRegistry accepted empty role values")
+	}
+	set, err := policy.NewSet(policy.Operation{
+		ID: "/pkg.Svc/OK", Kind: policy.KindGRPC, Exposure: policy.ExposureInternal,
+		Policy: policy.Policy{Anonymous: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := set.WithOperations(bad); err == nil {
+		t.Fatal("WithOperations accepted empty role values")
+	}
+	if _, err := policy.NewSet(policy.Operation{
+		ID: "/pkg.Svc/Custom", Kind: policy.KindGRPC, Exposure: policy.ExposureInternal,
+		Policy: policy.Policy{Require: []policy.Requirement{{Kind: "tenant"}}},
+	}); err == nil {
+		t.Fatal("NewSet should reject custom kind without its registry")
+	}
+	reg, err := policy.NewRegistry(policy.RequirementKind{Name: "tenant", DefaultMatch: policy.MatchAny})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := policy.NewSetWithRegistry(reg, policy.Operation{
+		ID: "/pkg.Svc/Custom", Kind: policy.KindGRPC, Exposure: policy.ExposureInternal,
+		Policy: policy.Policy{Require: []policy.Requirement{{Kind: "tenant", Values: []string{"acme"}}}},
+	}); err != nil {
+		t.Fatalf("custom kind registry rejected: %v", err)
+	}
+}
+
 func TestInheritDefaultAnonymousAndRequirement(t *testing.T) {
 	provider := fakeProvider{
 		file: policy.FileSpec{

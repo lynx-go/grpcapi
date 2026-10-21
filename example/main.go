@@ -32,12 +32,14 @@ func main() {
 	if desc == nil {
 		log.Fatal("EchoService descriptor missing")
 	}
+	impl := echoServer{}
 	registration := server.Registration{
 		API:        "public",
 		Name:       "EchoService",
 		Descriptor: desc,
 		RegisterGRPC: func(s *grpc.Server) {
-			echov1.RegisterEchoServiceServer(s, echoServer{})
+			// 必须复用 impl：TLS 时 external/internal 两个 server 会各调用一次。
+			echov1.RegisterEchoServiceServer(s, impl)
 		},
 		RegisterHTTP: func(ctx context.Context, mux *runtime.ServeMux, conn grpc.ClientConnInterface) error {
 			return echov1.RegisterEchoServiceHandlerClient(ctx, mux, echov1.NewEchoServiceClient(conn))

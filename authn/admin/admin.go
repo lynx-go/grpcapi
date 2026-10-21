@@ -78,17 +78,20 @@ func (e *Enricher) Enrich(ctx context.Context, p *principal.Principal) error {
 	if info == nil {
 		return nil
 	}
-	if len(info.Roles) > 0 {
+	if info.Suspended {
+		// 停用必须撤销 token/session 中已有的 admin 角色，而不只是注入
+		// 一个标记；否则只检查 admin_roles 的策略仍会放行。
+		if p.Claims != nil {
+			delete(p.Claims, e.claim)
+		} else {
+			p.Claims = make(map[string][]string)
+		}
+		p.Claims[e.suspendedClaim] = union(p.Claims[e.suspendedClaim], []string{"true"})
+	} else if len(info.Roles) > 0 {
 		if p.Claims == nil {
 			p.Claims = make(map[string][]string)
 		}
 		p.Claims[e.claim] = union(p.Claims[e.claim], info.Roles)
-	}
-	if info.Suspended {
-		if p.Claims == nil {
-			p.Claims = make(map[string][]string)
-		}
-		p.Claims[e.suspendedClaim] = union(p.Claims[e.suspendedClaim], []string{"true"})
 	}
 	if len(info.Attrs) > 0 {
 		if p.Attrs == nil {

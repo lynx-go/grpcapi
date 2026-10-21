@@ -202,7 +202,7 @@ func Build(ctx context.Context, src Source, opts Options) (*Set, error) {
 		}
 	}
 
-	set, err := newSet(opts.Registry, ops...)
+	set, err := newSet(opts.Registry, opts.Vocabulary, ops...)
 	if err != nil {
 		return nil, err
 	}
@@ -394,9 +394,9 @@ func andPolicy(base, extra Policy) Policy {
 	out := Policy{
 		Preset:     extra.Preset,
 		PresetArgs: cloneStringMap(extra.PresetArgs),
-		// AND：只有两侧都无需认证才是 anonymous；任一侧要求认证，
-		// 合并结果就必须要求认证。
-		Anonymous: base.Anonymous && extra.Anonymous,
+		// AND：base 公开时，extra 只要没有正要求（require/any_of）就仍是
+		// 公开 + 额外 forbid；extra 一旦要求认证，结果就必须要求认证。
+		Anonymous: base.Anonymous && (extra.Anonymous || (len(extra.Require) == 0 && len(extra.AnyOf) == 0)),
 		Require:   append(append([]Requirement(nil), base.Require...), extra.Require...),
 		AnyOf:     append(append([][]Requirement(nil), base.AnyOf...), extra.AnyOf...),
 		Forbid:    append(append([]Requirement(nil), base.Forbid...), extra.Forbid...),

@@ -47,6 +47,9 @@ func TestSetSatisfies(t *testing.T) {
 	if !(scope.Set{"*"}).Satisfies("anything", "admin") {
 		t.Error("wildcard should satisfy")
 	}
+	if !(scope.Set{"notes"}).Satisfies("notes", "admin") {
+		t.Error("resource-only token is intentionally any-op (documented compatibility semantics)")
+	}
 }
 
 func TestKindValidate(t *testing.T) {
