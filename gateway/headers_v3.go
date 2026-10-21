@@ -21,10 +21,21 @@ type HeaderPolicy struct {
 	FallbackOut func(string) (string, bool)
 }
 
+func defaultDeniedHeaders() []string {
+	return []string{
+		"authorization",
+		"grpcgateway-authorization",
+		"grpc-metadata-authorization",
+		"x-grpcapi-client-ip",
+		"grpcgateway-x-grpcapi-client-ip",
+		"grpc-metadata-x-grpcapi-client-ip",
+	}
+}
+
 // DefaultHeaderPolicy 返回安全默认。
 func DefaultHeaderPolicy() HeaderPolicy {
 	return HeaderPolicy{
-		Deny:   []string{"authorization", "x-grpcapi-client-ip"},
+		Deny:   defaultDeniedHeaders(),
 		Allow:  []string{"cookie", "x-api-key", "x-request-id", "idempotency-key"},
 		Direct: []string{"set-cookie"},
 	}
@@ -32,7 +43,7 @@ func DefaultHeaderPolicy() HeaderPolicy {
 
 func (p HeaderPolicy) normalize() HeaderPolicy {
 	if p.Deny == nil {
-		p.Deny = []string{"authorization", "x-grpcapi-client-ip"}
+		p.Deny = defaultDeniedHeaders()
 	}
 	if p.Allow == nil {
 		p.Allow = []string{"cookie", "x-api-key", "x-request-id", "idempotency-key"}

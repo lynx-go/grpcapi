@@ -11,8 +11,13 @@ type Set struct {
 	registry *Registry
 }
 
-// NewSet 构造空/给定 operation 的集合。重复 ID 报错。
+// NewSet 构造空/给定 operation 的集合。重复 ID / 无效策略报错。
 func NewSet(ops ...Operation) (*Set, error) {
+	for _, op := range ops {
+		if err := Validate(op.Policy); err != nil {
+			return nil, fmt.Errorf("operation %s: %w", op.ID, err)
+		}
+	}
 	return newSet(nil, ops...)
 }
 

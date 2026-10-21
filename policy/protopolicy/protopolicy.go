@@ -95,8 +95,57 @@ func (p *provider) checkUnknown(where string, m proto.Message) error {
 	if p.opts.AllowUnknownFields || m == nil {
 		return nil
 	}
-	if raw := m.ProtoReflect().GetUnknown(); len(raw) > 0 {
+	return checkUnknownTree(where, m.ProtoReflect())
+}
+
+// checkUnknownTree 递归检查扩展消息及其嵌套 Policy/Requirement：只在顶层
+// 查 unknown 会漏掉「新字段落在 default_policy / require / any_of 里」的升级
+// 场景，旧库会静默忽略并可能放宽权限。
+func checkUnknownTree(where string, msg protoreflect.Message) error {
+	if !msg.IsValid() {
+		return nil
+	}
+	if raw := msg.GetUnknown(); len(raw) > 0 {
 		return fmt.Errorf("%s: policy extension has %d unknown field byte(s); upgrade grpcapi or regenerate proto", where, len(raw))
+	}
+	fields := msg.Descriptor().Fields()
+	for i := 0; i < fields.Len(); i++ {
+		fd := fields.Get(i)
+		value := msg.Get(fd)
+		if fd.IsMap() {
+			if fd.MapValue().Kind() != protoreflect.MessageKind {
+				continue
+			}
+			var err error
+			value.Map().Range(func(k protoreflect.MapKey, v protoreflect.Value) bool {
+				if v.Message().IsValid() {
+					err = checkUnknownTree(where+"."+string(fd.Name())+"["+k.String()+"]", v.Message())
+				}
+				return err == nil
+			})
+			if err != nil {
+				return err
+			}
+			continue
+		}
+		if fd.Kind() != protoreflect.MessageKind {
+			continue
+		}
+		if fd.IsList() {
+			list := value.List()
+			for j := 0; j < list.Len(); j++ {
+				if err := checkUnknownTree(fmt.Sprintf("%s.%s[%d]", where, fd.Name(), j), list.Get(j).Message()); err != nil {
+					return err
+				}
+			}
+			continue
+		}
+		if !msg.Has(fd) {
+			continue
+		}
+		if err := checkUnknownTree(where+"."+string(fd.Name()), value.Message()); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -172,12 +221,14 @@ func convertRequirement(in *grpcapiv1.Requirement) policy.Requirement {
 
 func convertMatch(in grpcapiv1.Match) policy.Match {
 	switch in {
+	case grpcapiv1.Match_MATCH_UNSPECIFIED:
+		return policy.MatchDefault
 	case grpcapiv1.Match_MATCH_ANY:
 		return policy.MatchAny
 	case grpcapiv1.Match_MATCH_ALL:
 		return policy.MatchAll
 	default:
-		return policy.MatchDefault
+		return policy.Match(-1)
 	}
 }
 
@@ -198,12 +249,14 @@ func convertExposure(in grpcapiv1.Exposure) policy.Exposure {
 
 func convertStreamAuth(in grpcapiv1.StreamAuthMode) policy.StreamAuthMode {
 	switch in {
+	case grpcapiv1.StreamAuthMode_STREAM_AUTH_MODE_UNSPECIFIED:
+		return 0
 	case grpcapiv1.StreamAuthMode_STREAM_AUTH_MODE_PER_MESSAGE:
 		return policy.StreamAuthPerMessage
 	case grpcapiv1.StreamAuthMode_STREAM_AUTH_MODE_OPEN:
 		return policy.StreamAuthOpen
 	default:
-		return 0
+		return policy.StreamAuthMode(-1)
 	}
 }
 

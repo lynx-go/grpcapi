@@ -19,6 +19,20 @@ import (
 //   - extraAllow 追加项目专属放行头（如 x-torchwood-project）；
 //   - 其余回落 grpc-gateway 默认行为：Grpc-Metadata- 前缀与标准 HTTP 头透传为
 //     metadata，普通自定义头拒绝。
+func deniedHeader(lk string) bool {
+	switch lk {
+	case "authorization",
+		"grpcgateway-authorization",
+		"grpc-metadata-authorization",
+		"x-grpcapi-client-ip",
+		"grpcgateway-x-grpcapi-client-ip",
+		"grpc-metadata-x-grpcapi-client-ip":
+		return true
+	default:
+		return false
+	}
+}
+
 func IncomingMatcher(extraAllow ...string) func(string) (string, bool) {
 	allowed := map[string]struct{}{
 		"cookie":          {},
@@ -31,12 +45,7 @@ func IncomingMatcher(extraAllow ...string) func(string) (string, bool) {
 	}
 	return func(key string) (string, bool) {
 		lk := strings.ToLower(key)
-		if lk == "authorization" {
-			// 见函数注释：放行即双写 401，恒拒绝。
-			return "", false
-		}
-		if lk == "x-grpcapi-client-ip" {
-			// 内部可信 client-ip 只能由 gateway annotator 注入，客户端不得伪造。
+		if deniedHeader(lk) {
 			return "", false
 		}
 		if _, ok := allowed[lk]; ok {

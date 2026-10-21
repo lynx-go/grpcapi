@@ -2,6 +2,8 @@ package authn_test
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -125,6 +127,32 @@ func TestUnaryMultipleCredentialsRejected(t *testing.T) {
 	}
 }
 
+func TestUnaryRejectsDuplicateBearer(t *testing.T) {
+	auth := fakeAuthenticator{name: "fake", fn: func(authn.Credentials) (*principal.Principal, error) {
+		return &principal.Principal{ID: "u1"}, nil
+	}}
+	ic := authn.New(authn.Chain{auth}, authn.Options{}).Unary()
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(
+		"authorization", "Bearer first",
+		"authorization", "Bearer second",
+	))
+	_, err := ic(ctx, nil, &grpc.UnaryServerInfo{FullMethod: "/svc/Get"},
+		func(context.Context, any) (any, error) { return nil, nil })
+	if status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("code = %v, want Unauthenticated", status.Code(err))
+	}
+}
+
+func TestCredentialsMTLS(t *testing.T) {
+	c := authn.Credentials{TLS: &tls.ConnectionState{PeerCertificates: []*x509.Certificate{{}}}}
+	if c.Empty() {
+		t.Fatal("mTLS credentials must not be empty")
+	}
+	if c.AuthKinds() != 1 {
+		t.Fatalf("AuthKinds = %d, want 1", c.AuthKinds())
+	}
+}
+
 func TestUnaryIgnoreInvalidOnAnonymous(t *testing.T) {
 	auth := fakeAuthenticator{name: "fake", fn: func(authn.Credentials) (*principal.Principal, error) {
 		return nil, status.Error(codes.Unauthenticated, "bad")
@@ -172,5 +200,14 @@ func TestHTTPMiddleware(t *testing.T) {
 	i.HTTPMiddleware("GET /route", authn.HTTPOptions{})(next).ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/route", nil)
+	req.Header.Add("Authorization", "Bearer first")
+	req.Header.Add("Authorization", "Bearer second")
+	rec = httptest.NewRecorder()
+	i.HTTPMiddleware("GET /route", authn.HTTPOptions{})(next).ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("duplicate bearer status = %d, want 401", rec.Code)
 	}
 }

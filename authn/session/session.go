@@ -170,9 +170,10 @@ func (a *Authenticator) Authenticate(ctx context.Context, c authn.Credentials) (
 
 // Destroy 删除当前 session 并清除 cookie。
 func (a *Authenticator) Destroy(ctx context.Context, w http.ResponseWriter, r *http.Request) error {
+	var deleteErr error
 	if ck, err := r.Cookie(a.cfg.CookieName); err == nil {
 		if id, ok := a.verify(ck.Value); ok {
-			_ = a.cfg.Store.Delete(ctx, id)
+			deleteErr = a.cfg.Store.Delete(ctx, id)
 		}
 	}
 	http.SetCookie(w, &http.Cookie{
@@ -184,6 +185,9 @@ func (a *Authenticator) Destroy(ctx context.Context, w http.ResponseWriter, r *h
 		HttpOnly: true,
 		SameSite: a.cfg.SameSite,
 	})
+	if deleteErr != nil {
+		return fmt.Errorf("session: delete: %w", deleteErr)
+	}
 	return nil
 }
 

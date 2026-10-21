@@ -113,11 +113,17 @@ func AssertDocuments(t testing.TB, loader Loader, surf *surface.Surface, o Match
 	for _, doc := range docs {
 		services := make(map[string]struct{})
 		for _, op := range doc.Operations {
-			verbPath := op.Verb + " " + norm(stripPrefix(op.Path, o.Prefix, norm))
+			actualPath := norm(stripPrefix(op.Path, o.Prefix, norm))
+			verbPath := op.Verb + " " + actualPath
 			exp, ok := expected[verbPath]
 			if !ok {
 				if k, matched := matchByOperationID(op.ID, byOpID, o.DisableOperationIDFallback); matched {
-					verbPath, exp, ok = k, expected[k], true
+					// operationId fallback 只解决文档路径与 proto 路径的展示差异，
+					// 不能把 verb/path 完全不同的操作“按名字”放行。
+					cand := expected[k]
+					if cand.binding.Verb == op.Verb && norm(cand.binding.Path) == actualPath {
+						verbPath, exp, ok = k, cand, true
+					}
 				}
 			}
 			if !ok {

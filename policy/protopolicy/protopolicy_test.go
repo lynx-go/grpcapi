@@ -95,6 +95,21 @@ func TestProviderRejectsUnknownFields(t *testing.T) {
 	}
 }
 
+func TestProviderRejectsNestedUnknownFields(t *testing.T) {
+	inner := &grpcapiv1.Policy{Require: []*grpcapiv1.Requirement{{Kind: "role", Values: []string{"admin"}}}}
+	inner.ProtoReflect().SetUnknown([]byte{0x10, 0x01})
+	spec := &grpcapiv1.MethodSpec{Policy: inner}
+
+	methodOpts := &descriptorpb.MethodOptions{}
+	proto.SetExtension(methodOpts, grpcapiv1.E_Method, spec)
+	fd := buildFile(t, &descriptorpb.FileOptions{}, &descriptorpb.ServiceOptions{}, methodOpts)
+
+	_, _, err := New(Options{}).Method(fd.Services().Get(0).Methods().Get(0))
+	if err == nil || !strings.Contains(err.Error(), "unknown field") {
+		t.Fatalf("error = %v, want nested unknown field rejection", err)
+	}
+}
+
 func buildFile(t *testing.T, fileOpts *descriptorpb.FileOptions, svcOpts *descriptorpb.ServiceOptions, methodOpts *descriptorpb.MethodOptions) protoreflect.FileDescriptor {
 	t.Helper()
 	fdp := &descriptorpb.FileDescriptorProto{

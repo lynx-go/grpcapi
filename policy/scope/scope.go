@@ -82,7 +82,9 @@ func Kind(opts Options) policy.RequirementKind {
 			for _, want := range req.Values {
 				var ok bool
 				if want == "*" || want == "all" {
-					ok = !opts.DisallowWildcard
+					// 方法要求 "*" 表示调用方必须持有通配 scope；不能因为
+					// 策略里写了 "*" 就放行任意 principal（fail-closed）。
+					ok = !opts.DisallowWildcard && set.hasWildcard()
 				} else {
 					resource, op, err := parse(want)
 					if err != nil {
@@ -130,6 +132,15 @@ func Parse(raw []string) (Set, error) {
 // 通配符按放行处理；需要严格模式用 satisfies(..., false)。
 func (s Set) Satisfies(resource, op string) bool {
 	return s.satisfies(resource, op, true)
+}
+
+func (s Set) hasWildcard() bool {
+	for _, token := range s {
+		if token == "*" || token == "all" {
+			return true
+		}
+	}
+	return false
 }
 
 func (s Set) satisfies(resource, op string, allowWildcard bool) bool {

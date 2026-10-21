@@ -4,6 +4,7 @@
 package policy
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -34,18 +35,23 @@ func (m Match) String() string {
 	}
 }
 
+// MarshalJSON 让 manifest 输出 "any"/"all"，而不是难以理解的整数。
+func (m Match) MarshalJSON() ([]byte, error) {
+	return json.Marshal(m.String())
+}
+
 // Requirement 是策略树中的一个谓词。
 type Requirement struct {
 	// Kind 是已注册的谓词类型（authenticated/claim/role/permission/scope/...）。
-	Kind string
+	Kind string `json:"kind"`
 	// Vocabulary 是词表域；空 = 按 kind 规则推导。
-	Vocabulary string
+	Vocabulary string `json:"vocabulary,omitempty"`
 	// Match 是值匹配语义；MatchDefault 使用 kind 默认。
-	Match Match
+	Match Match `json:"match,omitempty"`
 	// Values 是谓词值（角色、权限、scope、claim 值等）。
-	Values []string
+	Values []string `json:"values,omitempty"`
 	// Params 是 kind 自定义参数（claim 名、表达式等）。
-	Params map[string]string
+	Params map[string]string `json:"params,omitempty"`
 }
 
 // Clone 返回深拷贝。
@@ -66,12 +72,12 @@ func (r Requirement) Clone() Requirement {
 // 有效策略 = preset 展开 + inherit 合并后的结果；Preset/PresetArgs 只保留
 // 诊断信息，不参与求值。
 type Policy struct {
-	Preset     string
-	PresetArgs map[string]string
-	Anonymous  bool
-	Require    []Requirement
-	AnyOf      [][]Requirement // 每个内层切片是一个 AND 组
-	Forbid     []Requirement
+	Preset     string            `json:"preset,omitempty"`
+	PresetArgs map[string]string `json:"preset_args,omitempty"`
+	Anonymous  bool              `json:"anonymous,omitempty"`
+	Require    []Requirement     `json:"require,omitempty"`
+	AnyOf      [][]Requirement   `json:"any_of,omitempty"` // 每个内层切片是一个 AND 组
+	Forbid     []Requirement     `json:"forbid,omitempty"`
 }
 
 // Clone 返回深拷贝。
@@ -273,7 +279,10 @@ func Format(p Policy) string {
 		appendReqList(&b, "require", p.Require)
 		for i, group := range p.AnyOf {
 			if i == 0 {
-				b.WriteString(" any_of[")
+				if b.Len() > 0 {
+					b.WriteString(" ")
+				}
+				b.WriteString("any_of[")
 			} else {
 				b.WriteString(" | ")
 			}
@@ -309,7 +318,9 @@ func appendReqList(b *strings.Builder, name string, reqs []Requirement) {
 		return
 	}
 	if name != "" {
-		b.WriteString(" ")
+		if b.Len() > 0 {
+			b.WriteString(" ")
+		}
 		b.WriteString(name)
 		b.WriteString(":")
 	}

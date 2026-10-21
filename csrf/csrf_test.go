@@ -55,6 +55,23 @@ func TestUnsafeMethodRequiresMatchingToken(t *testing.T) {
 	}
 }
 
+func TestExempt(t *testing.T) {
+	m := csrf.New(csrf.Config{Exempt: func(r *http.Request) bool {
+		return r.URL.Path == "/webhook"
+	}})
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) })
+	rec := httptest.NewRecorder()
+	m.Handler(next).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/webhook", nil))
+	if rec.Code != 200 {
+		t.Fatalf("exempt status = %d", rec.Code)
+	}
+	rec = httptest.NewRecorder()
+	m.Handler(next).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/other", nil))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("non-exempt status = %d, want 403", rec.Code)
+	}
+}
+
 func TestOriginAllowlist(t *testing.T) {
 	m := csrf.New(csrf.Config{AllowedOrigins: []string{"https://app.example.com"}})
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) })

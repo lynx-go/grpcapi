@@ -29,6 +29,9 @@ type Config struct {
 	SameSite http.SameSite
 	// AllowedOrigins 非空时校验 Origin/Referer 的来源。
 	AllowedOrigins []string
+	// Exempt 返回 true 时跳过该请求的 CSRF 校验（如使用独立凭证的 webhook）。
+	// 默认 nil = 所有 unsafe 请求都校验。
+	Exempt func(*http.Request) bool
 }
 
 func (c Config) normalize() Config {
@@ -79,6 +82,10 @@ func (m *Middleware) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodTrace:
+			next.ServeHTTP(w, r)
+			return
+		}
+		if m.cfg.Exempt != nil && m.cfg.Exempt(r) {
 			next.ServeHTTP(w, r)
 			return
 		}

@@ -74,6 +74,19 @@ func decidePolicy(ctx context.Context, req Request, reg *policy.Registry) (Decis
 	if p.Preset != "" || (!p.Anonymous && len(p.Require) == 0 && len(p.AnyOf) == 0) {
 		return Decision{Allow: false, Code: codes.Internal, Reason: "empty or unexpanded policy"}, nil
 	}
+	if p.Anonymous && (len(p.Require) > 0 || len(p.AnyOf) > 0) {
+		return Decision{Allow: false, Code: codes.Internal, Reason: "anonymous policy with requirements"}, nil
+	}
+	for _, group := range p.AnyOf {
+		if len(group) == 0 {
+			return Decision{Allow: false, Code: codes.Internal, Reason: "empty any_of group"}, nil
+		}
+	}
+	for _, req := range requirementsOf(p) {
+		if !policy.ValidMatch(req.Match) {
+			return Decision{Allow: false, Code: codes.Internal, Reason: "invalid requirement match"}, nil
+		}
+	}
 
 	if p.Anonymous {
 		if failed, err := matchAny(ctx, req, p.Forbid, reg); err != nil {

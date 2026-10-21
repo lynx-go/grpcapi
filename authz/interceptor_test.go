@@ -158,6 +158,34 @@ func TestStreamInterceptorPerMessage(t *testing.T) {
 	}
 }
 
+func TestFrameworkExempt(t *testing.T) {
+	set := testSet(t)
+	i, err := authz.NewInterceptor(set, nil, authz.InterceptorOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	handler := func(context.Context, any) (any, error) { called = true; return nil, nil }
+	if _, err := i.Unary()(context.Background(), nil, &grpc.UnaryServerInfo{FullMethod: "/grpc.health.v1.Health/Check"}, handler); err != nil {
+		t.Fatalf("health unary: %v", err)
+	}
+	if !called {
+		t.Fatal("health handler not called")
+	}
+	called = false
+	streamHandler := func(any, grpc.ServerStream) error { called = true; return nil }
+	if err := i.Stream()(nil, &fakeStream{ctx: context.Background()}, &grpc.StreamServerInfo{FullMethod: "/grpc.health.v1.Health/Watch"}, streamHandler); err != nil {
+		t.Fatalf("health stream: %v", err)
+	}
+	if !called {
+		t.Fatal("health stream handler not called")
+	}
+	_, err = i.Unary()(context.Background(), nil, &grpc.UnaryServerInfo{FullMethod: "/business.Svc/Get"}, handler)
+	if status.Code(err) != codes.Internal {
+		t.Fatalf("business missing policy code = %v, want Internal", status.Code(err))
+	}
+}
+
 func TestInterceptorOnDecision(t *testing.T) {
 	set := testSet(t, op("/svc/Public", policy.Policy{Anonymous: true}))
 	var decisions []authz.Decision

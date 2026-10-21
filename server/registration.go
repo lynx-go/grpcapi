@@ -127,6 +127,9 @@ func (r ExtraRoute) operation() (policy.Operation, error) {
 	if r.Policy != nil {
 		p = r.Policy.Clone()
 	}
+	if err := policy.Validate(p); err != nil {
+		return policy.Operation{}, fmt.Errorf("extra route %s %s: %w", r.Method, r.Path, err)
+	}
 	exposure := r.Exposure
 	if exposure == policy.ExposureUnspecified {
 		if r.IsPublic {

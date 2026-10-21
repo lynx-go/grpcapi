@@ -31,6 +31,8 @@ type InterceptorOptions struct {
 	ResourceResolver     ResourceResolver
 	OnDecision           func(ctx context.Context, op policy.Operation, d Decision)
 	Logger               *slog.Logger
+	// FrameworkExempt 豁免 health/reflection 等框架方法；nil = policy 默认。
+	FrameworkExempt func(fullMethod string) bool
 }
 
 func (o InterceptorOptions) normalize() InterceptorOptions {
@@ -45,6 +47,9 @@ func (o InterceptorOptions) normalize() InterceptorOptions {
 	}
 	if o.Logger == nil {
 		o.Logger = slog.Default()
+	}
+	if o.FrameworkExempt == nil {
+		o.FrameworkExempt = policy.DefaultFrameworkExempt
 	}
 	return o
 }
@@ -79,6 +84,9 @@ func (i *Interceptor) Unary() grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 		op, ok := i.set.Get(info.FullMethod)
 		if !ok {
+			if i.opts.FrameworkExempt(info.FullMethod) {
+				return handler(ctx, req)
+			}
 			i.opts.Logger.ErrorContext(ctx, "authz: missing policy", "method", info.FullMethod)
 			return nil, status.Error(i.opts.MissingPolicyCode, "no authorization policy for method")
 		}
@@ -98,10 +106,17 @@ func (i *Interceptor) Stream() grpc.StreamServerInterceptor {
 	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
 		op, ok := i.set.Get(info.FullMethod)
 		if !ok {
+			if i.opts.FrameworkExempt(info.FullMethod) {
+				return handler(srv, ss)
+			}
 			i.opts.Logger.ErrorContext(ss.Context(), "authz: missing policy", "method", info.FullMethod)
 			return status.Error(i.opts.MissingPolicyCode, "no authorization policy for method")
 		}
-		if streamMode(op, i.opts.StreamMode) == StreamModePerMessage {
+		mode, ok := streamMode(op, i.opts.StreamMode)
+		if !ok {
+			return status.Error(codes.Internal, "invalid stream authorization mode")
+		}
+		if mode == StreamModePerMessage {
 			return handler(srv, &authzStream{ServerStream: ss, interceptor: i, op: op})
 		}
 		d, err := i.authorize(ss.Context(), op, nil, true)
@@ -115,15 +130,18 @@ func (i *Interceptor) Stream() grpc.StreamServerInterceptor {
 	}
 }
 
-func streamMode(op policy.Operation, def StreamMode) StreamMode {
+func streamMode(op policy.Operation, def StreamMode) (StreamMode, bool) {
 	switch op.StreamAuth {
 	case policy.StreamAuthPerMessage:
-		return StreamModePerMessage
+		return StreamModePerMessage, true
 	case policy.StreamAuthOpen:
-		return StreamModeOpen
-	default:
-		return def
+		return StreamModeOpen, true
+	case 0:
+		if def == StreamModeOpen || def == StreamModePerMessage {
+			return def, true
+		}
 	}
+	return 0, false
 }
 
 func (i *Interceptor) authorize(ctx context.Context, op policy.Operation, req any, stream bool) (Decision, error) {

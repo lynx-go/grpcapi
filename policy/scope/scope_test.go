@@ -94,7 +94,7 @@ func TestKindEvaluate(t *testing.T) {
 		{"any of", policy.Requirement{Kind: "scope", Values: []string{"other:read", "notes:read"}}, true},
 		{"all", policy.Requirement{Kind: "scope", Match: policy.MatchAll, Values: []string{"notes:read"}}, true},
 		{"all missing", policy.Requirement{Kind: "scope", Match: policy.MatchAll, Values: []string{"notes:read", "notes:write"}}, false},
-		{"wildcard", policy.Requirement{Kind: "scope", Values: []string{"*"}}, true},
+		{"wildcard requirement without wildcard principal", policy.Requirement{Kind: "scope", Values: []string{"*"}}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -110,6 +110,11 @@ func TestKindEvaluate(t *testing.T) {
 
 	if got, _ := kind.Evaluate(context.Background(), policy.EvalContext{}, policy.Requirement{Kind: "scope", Values: []string{"notes"}}); got {
 		t.Fatal("nil principal should not satisfy")
+	}
+	if got, _ := kind.Evaluate(context.Background(), policy.EvalContext{
+		Principal: &principal.Principal{Claims: map[string][]string{"scopes": {"*"}}},
+	}, policy.Requirement{Kind: "scope", Values: []string{"*"}}); !got {
+		t.Fatal("wildcard principal should satisfy wildcard requirement")
 	}
 
 	strict := scope.Kind(scope.Options{DisallowWildcard: true})

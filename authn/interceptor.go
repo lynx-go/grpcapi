@@ -151,6 +151,13 @@ func (i *Interceptor) authenticate(ctx context.Context, fullMethod string, anony
 	if creds.Empty() {
 		return nil, nil
 	}
+	// 同一凭证族出现多个值（尤其多个 Authorization）一律拒绝，避免代理
+	// 叠加/注入时由“取第一个”静默选出攻击者可控的凭证。
+	if len(creds.Bearer) > 1 || len(creds.APIKeys) > 1 {
+		err := status.Error(codes.Unauthenticated, "multiple credentials of the same type are not allowed")
+		i.fail(ctx, err)
+		return nil, err
+	}
 	if i.opts.MultipleCredentialPolicy == MultipleCredentialReject && creds.AuthKinds() > 1 {
 		err := status.Error(codes.Unauthenticated, "multiple credential types are not allowed")
 		i.fail(ctx, err)

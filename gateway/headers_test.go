@@ -16,6 +16,10 @@ func TestIncomingMatcher(t *testing.T) {
 		// 服务端多凭证判定 401。
 		{"authorization 拒绝", nil, "Authorization", "", false},
 		{"authorization 小写拒绝", nil, "authorization", "", false},
+		{"grpc-metadata-authorization 拒绝", nil, "Grpc-Metadata-Authorization", "", false},
+		{"grpcgateway-authorization 拒绝", nil, "Grpcgateway-Authorization", "", false},
+		{"client-ip 拒绝", nil, "X-Grpcapi-Client-Ip", "", false},
+		{"grpc-metadata-client-ip 拒绝", nil, "Grpc-Metadata-X-Grpcapi-Client-Ip", "", false},
 		{"cookie 放行", nil, "Cookie", "cookie", true},
 		{"cookie 小写放行", nil, "cookie", "cookie", true},
 		{"x-api-key 放行", nil, "X-Api-Key", "x-api-key", true},

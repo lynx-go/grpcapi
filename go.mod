@@ -7,7 +7,7 @@ require (
 	buf.build/go/protovalidate v1.4.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0
-	github.com/lynx-go/grpcapi/genproto v0.0.0-00010101000000-000000000000
+	github.com/lynx-go/grpcapi/genproto v0.2.0
 	google.golang.org/genproto/googleapis/api v0.0.0-20260819154853-08b0e4226688
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260819154853-08b0e4226688
 	google.golang.org/grpc v1.83.2

@@ -73,6 +73,16 @@ func TestHeaderPolicy(t *testing.T) {
 	if _, ok := in("x-grpcapi-client-ip"); ok {
 		t.Fatal("internal client-ip must be denied")
 	}
+	for _, key := range []string{
+		"Grpc-Metadata-Authorization",
+		"Grpcgateway-Authorization",
+		"Grpc-Metadata-X-Grpcapi-Client-Ip",
+		"Grpcgateway-X-Grpcapi-Client-Ip",
+	} {
+		if _, ok := in(key); ok {
+			t.Fatalf("%s must be denied", key)
+		}
+	}
 	if got, ok := in("Cookie"); !ok || got != "cookie" {
 		t.Fatalf("cookie = %q, %v", got, ok)
 	}

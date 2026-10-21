@@ -28,6 +28,31 @@ func TestAssertRouteTablePositive(t *testing.T) {
 	AssertRouteTable(t, routes, RouteTableOptions{Policies: set, MinRoutes: 2})
 }
 
+func TestAssertRouteTableWithAPIPrefix(t *testing.T) {
+	surf := testSurface(t)
+	set, err := policy.NewSet(
+		policy.Operation{ID: "/example.echo.v1.EchoService/Shout", Kind: policy.KindGRPC, Exposure: policy.ExposurePublic, Policy: policy.Policy{Anonymous: true}},
+		policy.Operation{ID: "/example.echo.v1.EchoService/Hear", Kind: policy.KindGRPC, Exposure: policy.ExposurePublic, Policy: policy.Policy{Anonymous: true}},
+		policy.Operation{ID: "/example.echo.v1.EchoService/Ping", Kind: policy.KindGRPC, Exposure: policy.ExposurePublic, Policy: policy.Policy{Anonymous: true}},
+		policy.Operation{ID: "GET /api/v1/echo", Kind: policy.KindHTTP, Exposure: policy.ExposurePublic, Policy: policy.Policy{Anonymous: true}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var routes []surface.RouteInfo
+	for _, r := range surf.Routes() {
+		r.ProtoPath = r.Path
+		r.Path = "/api" + r.Path
+		routes = append(routes, r)
+	}
+	AssertRouteTable(t, routes, RouteTableOptions{Policies: set, Surface: surf, MinRoutes: 1})
+
+	extra := surface.RouteInfo{ID: "GET /api/v1/echo", Method: "GET", Path: "/api/v1/echo", Source: "extra"}
+	expectGuardFatal(t, "extra shadows prefixed proto", func(_ *testing.T, tb testing.TB) {
+		AssertRouteTable(tb, append(routes, extra), RouteTableOptions{Policies: set, Surface: surf})
+	})
+}
+
 func TestAssertRouteTableRejects(t *testing.T) {
 	set := routeTestSet(t)
 	base := []surface.RouteInfo{

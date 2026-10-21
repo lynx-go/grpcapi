@@ -116,6 +116,18 @@ func TestAssertDocumentsV3(t *testing.T) {
 	AssertDocuments(t, loader, testSurface(t), docOptions("#/components/schemas/v1ErrorResponse"))
 }
 
+func TestAssertDocumentsRejectsOperationIDPathMismatch(t *testing.T) {
+	bad := replaceOnce(v2Doc, `"/v1/echo:shout"`, `"/v1/echo:wrong"`)
+	fsys := fstest.MapFS{"api.swagger.json": &fstest.MapFile{Data: []byte(bad)}}
+	loader, err := OpenAPIv2(fsys, OpenAPIv2Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectGuardFatal(t, "not in surface", func(st *testing.T, tb testing.TB) {
+		AssertDocuments(tb, loader, testSurface(st), docOptions("#/definitions/v1ErrorResponse"))
+	})
+}
+
 func TestAssertDocumentsLabelDrift(t *testing.T) {
 	drifted := replaceOnce(v2Doc, `"x-grpcapi-policy": "server"`, `"x-grpcapi-policy": "public"`)
 	fsys := fstest.MapFS{"api.swagger.json": &fstest.MapFile{Data: []byte(drifted)}}

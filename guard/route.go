@@ -41,10 +41,17 @@ func AssertRouteTable(t testing.TB, routes []surface.RouteInfo, o RouteTableOpti
 		t.Fatalf("AssertRouteTable: 路由数 %d 低于下限 %d", len(routes), o.MinRoutes)
 	}
 
-	protoKeys := make(map[string]struct{})
+	surfaceProtoKeys := make(map[string]struct{})
 	if o.Surface != nil {
 		for _, r := range o.Surface.Routes() {
-			protoKeys[r.Method+" "+r.Path] = struct{}{}
+			surfaceProtoKeys[r.Method+" "+r.Path] = struct{}{}
+		}
+	}
+	// 路由表里的 Path 已叠加 API 前缀；用 proto 路由的实际 Path 检测 extra 覆盖。
+	protoFinalKeys := make(map[string]struct{})
+	for _, r := range routes {
+		if r.Source == "proto" && r.Method != "" && r.Path != "" {
+			protoFinalKeys[r.Method+" "+r.Path] = struct{}{}
 		}
 	}
 
@@ -76,8 +83,12 @@ func AssertRouteTable(t testing.TB, routes []surface.RouteInfo, o RouteTableOpti
 				errs = append(errs, fmt.Sprintf("route %s: proto route has empty FullMethod", key))
 			}
 			if o.Surface != nil {
-				if _, ok := protoKeys[key]; !ok {
-					errs = append(errs, fmt.Sprintf("route %s: not found in Surface", key))
+				surfaceKey := key
+				if r.ProtoPath != "" {
+					surfaceKey = r.Method + " " + r.ProtoPath
+				}
+				if _, ok := surfaceProtoKeys[surfaceKey]; !ok {
+					errs = append(errs, fmt.Sprintf("route %s: not found in Surface", surfaceKey))
 				}
 			}
 		case "extra":
@@ -85,7 +96,7 @@ func AssertRouteTable(t testing.TB, routes []surface.RouteInfo, o RouteTableOpti
 				errs = append(errs, fmt.Sprintf("route %s: extra route must not have FullMethod", key))
 			}
 			if o.Surface != nil && !o.AllowShadow {
-				if _, shadow := protoKeys[key]; shadow {
+				if _, shadow := protoFinalKeys[key]; shadow {
 					errs = append(errs, fmt.Sprintf("route %s: extra route shadows a proto route", key))
 				}
 			}

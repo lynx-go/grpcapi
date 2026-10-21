@@ -30,7 +30,12 @@ type Credentials struct {
 
 // Empty 报告是否没有任何待认证凭证。
 func (c Credentials) Empty() bool {
-	return len(c.Bearer) == 0 && len(c.APIKeys) == 0 && len(c.Cookies) == 0
+	return len(c.Bearer) == 0 && len(c.APIKeys) == 0 && len(c.Cookies) == 0 && !c.HasClientCert()
+}
+
+// HasClientCert 报告是否带 mTLS 客户端证书。
+func (c Credentials) HasClientCert() bool {
+	return c.TLS != nil && len(c.TLS.PeerCertificates) > 0
 }
 
 // BearerToken 返回第一个 Bearer token。
@@ -62,7 +67,7 @@ func (c Credentials) Cookie(name string) string {
 	return ""
 }
 
-// AuthKinds 返回出现的凭证种类数（Bearer/API key/Cookie）。
+// AuthKinds 返回出现的凭证种类数（Bearer/API key/Cookie/mTLS）。
 func (c Credentials) AuthKinds() int {
 	n := 0
 	if len(c.Bearer) > 0 {
@@ -72,6 +77,9 @@ func (c Credentials) AuthKinds() int {
 		n++
 	}
 	if len(c.Cookies) > 0 {
+		n++
+	}
+	if c.HasClientCert() {
 		n++
 	}
 	return n
@@ -158,12 +166,12 @@ type defaultHTTPExtractor struct{}
 
 func (defaultHTTPExtractor) ExtractHTTP(_ context.Context, fullMethod string, r *http.Request) (Credentials, error) {
 	c := Credentials{FullMethod: fullMethod, HTTP: r}
-	if token, ok := bearerToken(r.Header.Get("Authorization")); ok {
-		c.Bearer = append(c.Bearer, token)
+	for _, value := range r.Header.Values("Authorization") {
+		if token, ok := bearerToken(value); ok {
+			c.Bearer = append(c.Bearer, token)
+		}
 	}
-	if v := r.Header.Get("X-API-Key"); v != "" {
-		c.APIKeys = append(c.APIKeys, v)
-	}
+	c.APIKeys = append(c.APIKeys, r.Header.Values("X-API-Key")...)
 	c.Cookies = append(c.Cookies, r.Header.Values("Cookie")...)
 	if r.TLS != nil {
 		c.TLS = r.TLS

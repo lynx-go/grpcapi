@@ -52,6 +52,27 @@ func DefaultFrameworkExempt(fullMethod string) bool {
 	return false
 }
 
+// Validate 用默认 registry 校验单个有效策略（手工构造/ExtraRoute 用）。
+func Validate(p Policy) error {
+	return ValidateWith(p, DefaultRegistry(), nil)
+}
+
+// ValidateWith 用指定 registry/词表校验单个有效策略。
+func ValidateWith(p Policy, reg *Registry, vocab Vocabulary) error {
+	if reg == nil {
+		reg = DefaultRegistry()
+	}
+	if errs := validatePolicy("policy", p, reg, vocab); len(errs) > 0 {
+		return Violations(errs)
+	}
+	return nil
+}
+
+// ValidMatch 报告 Match 是否为已登记值。
+func ValidMatch(m Match) bool {
+	return m >= MatchDefault && m <= MatchAll
+}
+
 // Violations 是聚合的构建错误。
 type Violations []error
 
@@ -223,28 +244,58 @@ func buildOperation(
 		ms = MethodSpec{}
 	}
 
-	var policy Policy
-	switch {
-	case ms.Policy != nil && ms.InheritDefault && defaultPolicy != nil:
-		policy = andPolicy(*defaultPolicy, *ms.Policy)
-	case ms.Policy != nil:
-		policy = ms.Policy.Clone()
-	case defaultPolicy != nil:
-		policy = defaultPolicy.Clone()
-	default:
-		violations = append(violations, fmt.Errorf("method %s: missing policy (no method policy and no service/file default)", fullMethod))
+	var (
+		defaultExpanded *Policy
+		methodExpanded  *Policy
+		expandErr       error
+	)
+	if defaultPolicy != nil {
+		p, err := presets.expand(defaultPolicy.Clone(), nil)
+		if err != nil {
+			expandErr = err
+		} else {
+			defaultExpanded = &p
+		}
+	}
+	if ms.Policy != nil {
+		p, err := presets.expand(ms.Policy.Clone(), nil)
+		if err != nil {
+			expandErr = err
+		} else {
+			methodExpanded = &p
+		}
 	}
 
-	policy, err = presets.expand(policy, nil)
-	presetName := policy.Preset
-	if err != nil {
-		violations = append(violations, fmt.Errorf("method %s: %w", fullMethod, err))
+	var policy Policy
+	switch {
+	case ms.Policy != nil && ms.InheritDefault && defaultExpanded != nil && methodExpanded != nil:
+		policy = andPolicy(*defaultExpanded, *methodExpanded)
+	case ms.Policy != nil && methodExpanded != nil:
+		policy = *methodExpanded
+	case defaultExpanded != nil:
+		policy = *defaultExpanded
+	default:
+		if expandErr == nil {
+			violations = append(violations, fmt.Errorf("method %s: missing policy (no method policy and no service/file default)", fullMethod))
+		}
+	}
+
+	presetName := ""
+	if methodExpanded != nil {
+		presetName = methodExpanded.Preset
+	}
+	if presetName == "" && defaultExpanded != nil {
+		presetName = defaultExpanded.Preset
+	}
+	// 有效策略不保留 preset 元数据；校验前先清掉，否则 validatePolicy 会
+	// 把已展开的策略误判为未展开。
+	policy.Preset = ""
+	policy.PresetArgs = nil
+	if expandErr != nil {
+		violations = append(violations, fmt.Errorf("method %s: %w", fullMethod, expandErr))
 	} else {
 		violations = append(violations, validatePolicy(fullMethod, policy, opts.Registry, opts.Vocabulary)...)
 	}
-	// 有效策略不保留 preset 元数据；否则运行期会误判为未展开。
-	policy.Preset = ""
-	policy.PresetArgs = nil
 
 	exposure := ms.Exposure
 	if exposure == ExposureUnspecified {
@@ -265,6 +316,9 @@ func buildOperation(
 	streamAuth := ms.StreamAuth
 	if streamAuth == 0 {
 		streamAuth = StreamAuthOpen
+	}
+	if streamAuth != StreamAuthOpen && streamAuth != StreamAuthPerMessage {
+		violations = append(violations, fmt.Errorf("method %s: invalid stream auth mode %d", fullMethod, int(streamAuth)))
 	}
 	opID := ms.OperationID
 	if opID == "" {
@@ -340,16 +394,21 @@ func andPolicy(base, extra Policy) Policy {
 	out := Policy{
 		Preset:     extra.Preset,
 		PresetArgs: cloneStringMap(extra.PresetArgs),
-		Anonymous:  base.Anonymous || extra.Anonymous,
-		Require:    append(append([]Requirement(nil), base.Require...), extra.Require...),
-		AnyOf:      append(append([][]Requirement(nil), base.AnyOf...), extra.AnyOf...),
-		Forbid:     append(append([]Requirement(nil), base.Forbid...), extra.Forbid...),
+		// AND：只有两侧都无需认证才是 anonymous；任一侧要求认证，
+		// 合并结果就必须要求认证。
+		Anonymous: base.Anonymous && extra.Anonymous,
+		Require:   append(append([]Requirement(nil), base.Require...), extra.Require...),
+		AnyOf:     append(append([][]Requirement(nil), base.AnyOf...), extra.AnyOf...),
+		Forbid:    append(append([]Requirement(nil), base.Forbid...), extra.Forbid...),
 	}
 	return out
 }
 
 func validatePolicy(id string, p Policy, reg *Registry, vocab Vocabulary) []error {
 	var errs []error
+	if p.Preset != "" {
+		errs = append(errs, fmt.Errorf("method %s: unexpanded preset %q (use Build or expand before authorizing)", id, p.Preset))
+	}
 	if p.Anonymous {
 		if len(p.Require) > 0 || len(p.AnyOf) > 0 {
 			errs = append(errs, fmt.Errorf("method %s: anonymous cannot be combined with require/any_of", id))
@@ -376,6 +435,9 @@ func validatePolicy(id string, p Policy, reg *Registry, vocab Vocabulary) []erro
 }
 
 func validateRequirement(id string, req Requirement, reg *Registry, vocab Vocabulary) []error {
+	if !ValidMatch(req.Match) {
+		return []error{fmt.Errorf("method %s: invalid requirement match value %d", id, int(req.Match))}
+	}
 	kind, ok := reg.Get(req.Kind)
 	if !ok {
 		return []error{fmt.Errorf("method %s: unknown requirement kind %q (registered: %s)", id, req.Kind, strings.Join(reg.Names(), ", "))}

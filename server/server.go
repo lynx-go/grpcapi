@@ -88,19 +88,20 @@ type Config struct {
 }
 
 type Server struct {
-	cfg        Config
-	logger     *slog.Logger
-	set        *policy.Set
-	surf       *surface.Surface
-	chain      *interceptor.Chain
-	grpcServer *grpc.Server
-	health     *health.Server
-	httpServer *http.Server
-	handler    http.Handler
-	conn       *grpc.ClientConn
-	bufLis     *bufconn.Listener
-	routes     []surface.RouteInfo
-	ops        []policy.Operation
+	cfg            Config
+	logger         *slog.Logger
+	set            *policy.Set
+	surf           *surface.Surface
+	chain          *interceptor.Chain
+	externalServer *grpc.Server
+	internalServer *grpc.Server
+	health         *health.Server
+	httpServer     *http.Server
+	handler        http.Handler
+	conn           *grpc.ClientConn
+	bufLis         *bufconn.Listener
+	routes         []surface.RouteInfo
+	ops            []policy.Operation
 
 	mu       sync.Mutex
 	grpcAddr string
@@ -135,9 +136,6 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 	}
 	if cfg.DisableGRPC && cfg.DisableHTTP {
 		return nil, fmt.Errorf("server: DisableGRPC and DisableHTTP cannot both be true")
-	}
-	if cfg.NetworkDial && cfg.DisableGRPC {
-		return nil, fmt.Errorf("server: NetworkDial requires an external gRPC server")
 	}
 	if cfg.NetworkDial && strings.HasSuffix(cfg.GRPCAddr, ":0") {
 		return nil, fmt.Errorf("server: NetworkDial cannot use an ephemeral gRPC port")
@@ -186,7 +184,7 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 	if err := validateRegisteredPolicies(cfg, set, surf, extraOps); err != nil {
 		return nil, err
 	}
-	if err := validateExtraConflicts(surf, extraOps); err != nil {
+	if err := validateExtraConflicts(cfg, surf, extraOps); err != nil {
 		return nil, err
 	}
 	if err := validateCSRF(cfg); err != nil {
@@ -280,8 +278,28 @@ func buildPolicy(ctx context.Context, cfg Config, regs []Registration) (*policy.
 }
 
 func (s *Server) buildGRPC() error {
+	if !s.cfg.DisableHealth {
+		s.health = health.NewServer()
+	}
+	if !s.cfg.DisableGRPC {
+		s.externalServer = s.newGRPCServer(true)
+		s.registerGRPC(s.externalServer)
+	}
+	if !s.cfg.DisableHTTP {
+		// TLS 外部 server 不能同时服务明文 bufconn；用独立的内部 server。
+		if s.cfg.TLS == nil && s.externalServer != nil {
+			s.internalServer = s.externalServer
+		} else {
+			s.internalServer = s.newGRPCServer(false)
+			s.registerGRPC(s.internalServer)
+		}
+	}
+	return nil
+}
+
+func (s *Server) newGRPCServer(withTLS bool) *grpc.Server {
 	opts := make([]grpc.ServerOption, 0, len(s.cfg.GRPCOptions)+4)
-	if s.cfg.TLS != nil {
+	if withTLS && s.cfg.TLS != nil {
 		opts = append(opts, grpc.Creds(credentials.NewTLS(s.cfg.TLS)))
 	}
 	opts = append(opts,
@@ -290,8 +308,10 @@ func (s *Server) buildGRPC() error {
 	)
 	opts = append(opts, s.chain.ServerOptions()...)
 	opts = append(opts, s.cfg.GRPCOptions...)
-	s.grpcServer = grpc.NewServer(opts...)
+	return grpc.NewServer(opts...)
+}
 
+func (s *Server) registerGRPC(srv *grpc.Server) {
 	seen := make(map[string]struct{})
 	for _, r := range allRegistrations(s.cfg) {
 		if r.Descriptor == nil || r.RegisterGRPC == nil {
@@ -302,16 +322,14 @@ func (s *Server) buildGRPC() error {
 			continue
 		}
 		seen[name] = struct{}{}
-		r.RegisterGRPC(s.grpcServer)
+		r.RegisterGRPC(srv)
 	}
-	if !s.cfg.DisableHealth {
-		s.health = health.NewServer()
-		healthpb.RegisterHealthServer(s.grpcServer, s.health)
+	if s.health != nil {
+		healthpb.RegisterHealthServer(srv, s.health)
 	}
 	if s.cfg.Reflection {
-		reflection.Register(s.grpcServer)
+		reflection.Register(srv)
 	}
-	return nil
 }
 
 func (s *Server) buildHTTP(ctx context.Context, set *policy.Set, surf *surface.Surface, extra []ExtraRoute, extraOps []policy.Operation, decider authz.Decider, authenticator *authn.Interceptor) (http.Handler, []surface.RouteInfo, error) {
@@ -388,16 +406,19 @@ func (s *Server) buildHTTP(ctx context.Context, set *policy.Set, surf *surface.S
 		}
 		projectMeta := muxOpts.Metadata
 		muxOpts.Metadata = func(ctx context.Context, r *http.Request) metadata.MD {
-			md := clientIPAnnotator(ctx, r)
+			var md metadata.MD
 			if projectMeta != nil {
-				pmd := projectMeta(ctx, r)
-				if len(pmd) > 0 {
-					if md == nil {
-						md = metadata.MD{}
-					}
-					for k, vs := range pmd {
-						md[k] = append(md[k], vs...)
-					}
+				md = projectMeta(ctx, r)
+			}
+			// 可信 client-ip 最后追加，确保 project metadata 不能覆盖
+			// （clientinfo 取最后一个值）。
+			ipmd := clientIPAnnotator(ctx, r)
+			if len(ipmd) > 0 {
+				if md == nil {
+					md = metadata.MD{}
+				}
+				for k, vs := range ipmd {
+					md[k] = append(md[k], vs...)
 				}
 			}
 			return md
@@ -662,11 +683,24 @@ func validateRegisteredPolicies(cfg Config, set *policy.Set, surf *surface.Surfa
 	return nil
 }
 
-func validateExtraConflicts(surf *surface.Surface, extra []policy.Operation) error {
+func validateExtraConflicts(cfg Config, surf *surface.Surface, extra []policy.Operation) error {
+	prefixByAPI := make(map[string]string, len(cfg.APIs))
+	for _, a := range cfg.APIs {
+		prefix := strings.TrimSpace(a.Prefix)
+		if prefix == "" {
+			continue
+		}
+		prefix = surface.NormalizePath(prefix)
+		if prefix == "/" {
+			prefix = ""
+		}
+		prefixByAPI[a.Name] = prefix
+	}
 	seen := make(map[string]string)
 	for _, op := range surf.Operations() {
 		for _, b := range op.HTTP {
-			seen[b.Verb+" "+b.Path] = op.Operation.ID
+			path := joinPaths(prefixByAPI[op.Operation.API], b.Path)
+			seen[b.Verb+" "+path] = op.Operation.ID
 		}
 	}
 	for _, op := range extra {
@@ -832,15 +866,12 @@ func (s *Server) Run(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if s.cfg.TLS != nil {
-			lis = tls.NewListener(lis, s.cfg.TLS)
-		}
 		grpcLis = lis
 		s.mu.Lock()
 		s.grpcAddr = lis.Addr().String()
 		s.mu.Unlock()
 		go func() {
-			if err := s.grpcServer.Serve(lis); err != nil {
+			if err := s.externalServer.Serve(lis); err != nil {
 				errCh <- err
 			}
 		}()
@@ -851,7 +882,7 @@ func (s *Server) Run(ctx context.Context) error {
 				return fmt.Errorf("server: HTTP enabled but in-process listener missing")
 			}
 			go func() {
-				if err := s.grpcServer.Serve(s.bufLis); err != nil {
+				if err := s.internalServer.Serve(s.bufLis); err != nil {
 					errCh <- err
 				}
 			}()
@@ -904,25 +935,40 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if s.health != nil {
 		s.health.SetServingStatus("", healthpb.HealthCheckResponse_NOT_SERVING)
 	}
+	var errs []error
 	if s.httpServer != nil {
-		_ = s.httpServer.Shutdown(ctx)
+		if err := s.httpServer.Shutdown(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("server: http shutdown: %w", err))
+		}
 	}
-	if s.grpcServer != nil {
+	servers := []*grpc.Server{s.externalServer, s.internalServer}
+	seen := make(map[*grpc.Server]struct{}, len(servers))
+	for _, srv := range servers {
+		if srv == nil {
+			continue
+		}
+		if _, dup := seen[srv]; dup {
+			continue
+		}
+		seen[srv] = struct{}{}
 		done := make(chan struct{})
-		go func() {
-			s.grpcServer.GracefulStop()
+		go func(srv *grpc.Server) {
+			srv.GracefulStop()
 			close(done)
-		}()
+		}(srv)
 		select {
 		case <-done:
 		case <-ctx.Done():
-			s.grpcServer.Stop()
+			srv.Stop()
+			errs = append(errs, ctx.Err())
 		}
 	}
 	if s.conn != nil {
-		_ = s.conn.Close()
+		if err := s.conn.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("server: close gateway conn: %w", err))
+		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 func grpcLisAddr(lis net.Listener) string {

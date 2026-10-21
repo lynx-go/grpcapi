@@ -2,6 +2,7 @@ package interceptor
 
 import (
 	"context"
+	"net/netip"
 
 	"github.com/lynx-go/grpcapi/contextx"
 	"google.golang.org/grpc"
@@ -69,11 +70,11 @@ func (c *ClientInfoInterceptor) extractClientInfo(ctx context.Context, md metada
 	realIP := firstMetadataValue(md, "x-real-ip")
 
 	peerIP := PeerIP(ctx)
-	injected := firstMetadataValue(md, "x-grpcapi-client-ip")
+	injected := lastMetadataValue(md, "x-grpcapi-client-ip")
 	var ip string
 	switch {
-	case injected != "" && (peerIP == "" || c.trusted.Trusted(peerIP)):
-		// gateway 注入的可信 client-ip；in-process 无 peer 时直接采信。
+	case injected != "" && (peerIP == "" || !validIP(peerIP) || c.trusted.Trusted(peerIP)):
+		// gateway 注入的可信 client-ip；in-process/bufconn 的假 peer 下直接采信。
 		ip = injected
 	case peerIP != "":
 		ip = c.trusted.ResolveClientIP(peerIP, xff, realIP)
@@ -97,4 +98,19 @@ func firstMetadataValue(md metadata.MD, key string) string {
 		return vs[0]
 	}
 	return ""
+}
+
+// lastMetadataValue 用于 gateway 注入头：多个值时取最后一个（annotator 在
+// 已有 metadata 之后追加），避免客户端伪造值排在前面被选中。
+func lastMetadataValue(md metadata.MD, key string) string {
+	vs := md.Get(key)
+	if len(vs) == 0 {
+		return ""
+	}
+	return vs[len(vs)-1]
+}
+
+func validIP(s string) bool {
+	_, err := netip.ParseAddr(s)
+	return err == nil
 }

@@ -339,6 +339,85 @@ func TestPresetExpansion(t *testing.T) {
 	}
 }
 
+func TestInheritDefaultExpandsDefaultPreset(t *testing.T) {
+	base := policy.Preset{
+		Name: "base",
+		Build: func(map[string]string) (policy.Policy, error) {
+			return policy.Policy{Require: []policy.Requirement{
+				{Kind: "permission", Match: policy.MatchAll, Values: []string{"base.read"}},
+			}}, nil
+		},
+	}
+	provider := fakeProvider{
+		file: policy.FileSpec{DefaultExposure: policy.ExposureInternal},
+		services: map[protoreflect.FullName]policy.ServiceSpec{
+			"example.echo.v1.EchoService": {
+				DefaultPolicy: &policy.Policy{Preset: "base"},
+			},
+		},
+		methods: map[protoreflect.FullName]policy.MethodSpec{
+			"example.echo.v1.EchoService.Shout": {
+				Policy: &policy.Policy{Require: []policy.Requirement{
+					{Kind: "role", Match: policy.MatchAny, Values: []string{"admin"}},
+				}},
+				InheritDefault: true,
+			},
+			"example.echo.v1.EchoService.Ping": {
+				Policy: &policy.Policy{Anonymous: true},
+			},
+		},
+	}
+	set, err := policy.Build(context.Background(), policy.FromFiles(echov1.File_echo_proto), policy.Options{
+		Provider: provider,
+		Registry: policy.DefaultRegistry(),
+		Presets:  []policy.Preset{base},
+	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	op, _ := set.Get("/example.echo.v1.EchoService/Shout")
+	if len(op.Policy.Require) != 2 {
+		t.Fatalf("inherited policy = %+v, want base.read + admin", op.Policy)
+	}
+	if op.Policy.Require[0].Kind != "permission" || op.Policy.Require[1].Kind != "role" {
+		t.Fatalf("inherited requirements = %+v", op.Policy.Require)
+	}
+}
+
+func TestInheritDefaultAnonymousAndRequirement(t *testing.T) {
+	provider := fakeProvider{
+		file: policy.FileSpec{
+			DefaultPolicy:   &policy.Policy{Anonymous: true},
+			DefaultExposure: policy.ExposurePublic,
+		},
+		methods: map[protoreflect.FullName]policy.MethodSpec{
+			"example.echo.v1.EchoService.Shout": {
+				Policy: &policy.Policy{Require: []policy.Requirement{
+					{Kind: "role", Match: policy.MatchAny, Values: []string{"admin"}},
+				}},
+				InheritDefault: true,
+			},
+		},
+	}
+	set, err := policy.Build(context.Background(), policy.FromFiles(echov1.File_echo_proto), policy.Options{
+		Provider: provider,
+		Registry: policy.DefaultRegistry(),
+	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	op, ok := set.Get("/example.echo.v1.EchoService/Shout")
+	if !ok {
+		t.Fatal("Shout missing")
+	}
+	if op.Policy.Anonymous {
+		t.Fatalf("AND(anonymous, role) must not be anonymous: %+v", op.Policy)
+	}
+	if len(op.Policy.Require) != 1 || op.Policy.Require[0].Kind != "role" {
+		t.Fatalf("Shout policy = %+v, want role requirement", op.Policy)
+	}
+}
+
 func TestSetMergeFilterManifest(t *testing.T) {
 	ops := []policy.Operation{
 		{ID: "GET /v1/health", Kind: policy.KindHTTP, API: "public", Exposure: policy.ExposurePublic, Policy: policy.Policy{Anonymous: true}},

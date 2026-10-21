@@ -122,6 +122,11 @@ func swaggerAccessMatches(tb testing.TB, o SwaggerOptions) {
 		}
 	}
 	for _, p := range o.Policies.Operations() {
+		// 只为会出现在公开文档里的面做反向覆盖率；INTERNAL/HIDDEN 没有
+		// google.api.http 文档是正常状态。
+		if p.Exposure != policy.ExposurePublic && p.Exposure != policy.ExposureDeprecated {
+			continue
+		}
 		accessOf[p.ID] = p.EffectiveLabel()
 	}
 
