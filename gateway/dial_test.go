@@ -61,7 +61,7 @@ func TestDial(t *testing.T) {
 }
 
 func TestRegister(t *testing.T) {
-	mux := NewMux(MuxOptions{ErrorHandler: errorHandlerForTest(nil, HTTPOptions{})})
+	mux := NewMux(MuxOptions{})
 	ctx := context.Background()
 
 	calls := 0

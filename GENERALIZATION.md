@@ -434,8 +434,9 @@ message MethodSpec {
   bool idempotent = 5;         // 仅元数据；行为由可选 idempotency 模块提供
   Deprecation deprecation = 6;
 
-  // true = 方法策略与 service/file 默认按 AND 合并（用于「在默认上收紧」）。
-  // 默认 false = 整体替换。方法声明 anonymous 时不允许 inherit。
+  // true = 与 service/file 默认合并：require/forbid 跨层 AND，any_of
+  // 各组并入备选列表（组间恒为 OR）。默认 false = 整体替换。方法声明
+  // anonymous 时不允许 inherit。
   bool inherit_default = 7;
 
   // 仅流式方法有效；默认 OPEN（建立时授权）。
@@ -1299,19 +1300,19 @@ Mux / Handler：
 
 ```go
 type MuxOptions struct {
-    ErrorEncoder ErrorEncoder   // 新式；优先于 ErrorHandler
-    ErrorHandler runtime.ErrorHandlerFunc // 旧式适配
-    HeaderPolicy *HeaderPolicy  // 非 nil 时接管入/出站策略
+    ErrorEncoder ErrorEncoder   // nil → DefaultErrorEncoder
+    Headers      HeaderPolicy   // 零值 → DefaultHeaderPolicy
     Marshaler    runtime.Marshaler
-    IncomingExtra []string
-    OutgoingDirect []string
     ServeMuxOptions []runtime.ServeMuxOption
     // server.New 用它注入 x-grpcapi-client-ip。
     Metadata func(context.Context, *http.Request) metadata.MD
 }
 
-// 零值安全：ErrorEncoder/ErrorHandler 都 nil → DefaultErrorEncoder；
-// HeaderPolicy nil → 旧 matcher；Marshaler nil → NewMarshaler。
+// 零值安全：ErrorEncoder nil → DefaultErrorEncoder；
+// Headers 零值 → DefaultHeaderPolicy；Marshaler nil → NewMarshaler。
+// （v3 已收敛单轨：旧 ErrorHandler/IncomingExtra/OutgoingDirect 旋钮与
+// IncomingMatcher/OutgoingMatcher/NewErrorHandler/ErrorBodyBuilder 已删除，
+// 迁移见 MIGRATION.md。）
 func NewMux(o MuxOptions) *runtime.ServeMux
 
 type Middleware = func(http.Handler) http.Handler

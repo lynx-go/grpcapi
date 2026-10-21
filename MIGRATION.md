@@ -16,6 +16,9 @@
 | `authz.Vocabulary{ScopeResources}` | `policy.Vocabulary{"scope": ...}` |
 | `interceptor.ChainItem{Slot,...}` | `interceptor.Stage{Name,Order,...}` |
 | `gateway.ErrorBodyBuilder` | `gateway.ErrorEncoder` / `DefaultErrorEncoder` |
+| `gateway.NewErrorHandler(b, HTTPOptions)` | `gateway.NewEncoderErrorHandler(e)` |
+| `gateway.IncomingMatcher` / `OutgoingMatcher` | `gateway.IncomingPolicy` / `OutgoingPolicy`（`HeaderPolicy`） |
+| `gateway.MuxOptions{ErrorHandler, IncomingExtra, OutgoingDirect, HeaderPolicy}` | `gateway.MuxOptions{ErrorEncoder, Headers HeaderPolicy}` |
 | `guard.SwaggerAccessMatches` | `guard.OpenAPIv2` + `guard.AssertDocuments` / `guard.Run` |
 | `guard.AssertMethodCount`（global registry） | `guard.AssertSurfaceMethodCount` |
 | `guard.AssertServiceCoverage`（global registry） | `guard.AssertSurfaceCoverage` |

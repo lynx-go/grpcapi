@@ -403,24 +403,15 @@ func (s *Server) buildHTTP(ctx context.Context, set *policy.Set, surf *surface.S
 	if s.cfg.Mux.ErrorEncoder != nil {
 		encoder = s.cfg.Mux.ErrorEncoder
 	}
-	globalErr := s.cfg.Mux.ErrorHandler
-	if globalErr == nil {
-		globalErr = gateway.NewEncoderErrorHandler(encoder)
-	}
+	globalErr := gateway.NewEncoderErrorHandler(encoder)
 	errorWriter := func(w http.ResponseWriter, r *http.Request, err error) {
 		globalErr(r.Context(), nil, gateway.NewMarshaler(), w, r, err)
 	}
 
 	for _, g := range groups {
 		muxOpts := g.mux
-		if muxOpts.ErrorHandler == nil && muxOpts.ErrorEncoder == nil {
-			if s.cfg.Mux.ErrorEncoder != nil {
-				muxOpts.ErrorEncoder = s.cfg.Mux.ErrorEncoder
-			} else if s.cfg.Mux.ErrorHandler != nil {
-				muxOpts.ErrorHandler = s.cfg.Mux.ErrorHandler
-			} else {
-				muxOpts.ErrorEncoder = encoder
-			}
+		if muxOpts.ErrorEncoder == nil {
+			muxOpts.ErrorEncoder = encoder
 		}
 		projectMeta := muxOpts.Metadata
 		muxOpts.Metadata = func(ctx context.Context, r *http.Request) metadata.MD {

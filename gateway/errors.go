@@ -1,5 +1,5 @@
 // Package gateway 装配 grpc-gateway 反向代理：统一错误处理、protojson 序列化、
-// 入/出站 header matcher 与同地址拨号。机制平移自 torchwood
+// 入/出站 header 策略与同地址拨号。机制平移自 torchwood
 // cmd/server/internal/runtime（errors.go / grpc_gateway.go），项目契约
 // （错误体 JSON 形状、code→error_code 映射、项目专属 header）经参数注入。
 package gateway
@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"log/slog"
 	"math"
 	"net/http"
@@ -21,115 +22,185 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// ErrorBodyBuilder 由项目实现，承载对客户端的错误契约（库不感知错误体形状）：
-//
-//   - Build 构造最终写出的错误体（proto.Message，经 marshaler 序列化为 JSON）；
-//   - MapErrorCode 声明 gRPC code → 项目 error_code 的映射（无映射返回 nil）。
-//     典型用法是项目 Build 内部委托它填充错误体中的业务错误码字段；接口把两者
-//     绑定声明，使项目的“code→error_code 映射表”可与错误体形状分开单独断言
-//     （如 guard 式的映射完备性测试）。
-type ErrorBodyBuilder interface {
-	Build(code codes.Code, message, errorID string) proto.Message
-	MapErrorCode(code codes.Code) any
+// ErrorResponse 是 ErrorEncoder 的输出。
+type ErrorResponse struct {
+	Status  int
+	Body    any
+	Headers http.Header
 }
 
-// HTTPOptions 是统一错误处理器的行为选项，零值即安全默认。
-type HTTPOptions struct {
+// ErrorEncoder 把 gRPC 错误编码为 HTTP 响应；项目可完全替换错误体契约。
+type ErrorEncoder interface {
+	Encode(ctx context.Context, err error) ErrorResponse
+}
+
+// ErrorEncoderFunc 便于用函数实现 ErrorEncoder。
+type ErrorEncoderFunc func(context.Context, error) ErrorResponse
+
+// Encode 实现 ErrorEncoder。
+func (f ErrorEncoderFunc) Encode(ctx context.Context, err error) ErrorResponse {
+	return f(ctx, err)
+}
+
+// ErrorOptions 是 DefaultErrorEncoder 的配置。
+type ErrorOptions struct {
 	// CodeToHTTP 覆盖内置 grpc code → HTTP 状态码映射（仅声明的条目生效）。
 	// 缺省内置表含 Canceled→499（客户端主动断开，非标准但业界惯例）。
 	CodeToHTTP map[codes.Code]int
-
-	// SanitizeInternal 控制 Internal/Unknown 的对外文案脱敏。零值默认视为
-	// true（用 getter 归一）：Go bool 无法区分“未设置”与显式 false，按
-	// fail-closed 原则一律视为开启——原始错误消息只进日志、不下发。
-	// 未来如需支持显式关闭，需把该字段升级为 *bool。
-	SanitizeInternal bool
-
-	// Logger 可选：脱敏路径与非状态错误路径用它记录原始错误。nil 时回落
-	// slog.Default()。
-	Logger *slog.Logger
+	CodeString func(codes.Code) string
+	// Sanitize 返回 true 时把 Internal/Unknown 替换为通用文案
+	// （fail-closed：原始消息只进日志、不下发）。
+	Sanitize func(codes.Code) bool
+	ErrorID  func() string
+	Logger   *slog.Logger
+	// 零值安全：默认写 Retry-After；显式关闭才设为 true。
+	DisableRetryAfter bool
 }
 
-// sanitizeInternal 归一 SanitizeInternal（见字段注释：当前恒为 true）。
-func (o HTTPOptions) sanitizeInternal() bool {
-	return true
+func (o ErrorOptions) codeToHTTP(code codes.Code) int {
+	if v, ok := o.CodeToHTTP[code]; ok {
+		return v
+	}
+	return DefaultCodeToHTTP(code)
 }
 
-// logger 归一日志器：未注入时回落 slog 默认。
-func (o HTTPOptions) logger() *slog.Logger {
+func (o ErrorOptions) codeString(code codes.Code) string {
+	if o.CodeString != nil {
+		return o.CodeString(code)
+	}
+	return code.String()
+}
+
+func (o ErrorOptions) sanitize(code codes.Code) bool {
+	if o.Sanitize != nil {
+		return o.Sanitize(code)
+	}
+	return code == codes.Internal || code == codes.Unknown
+}
+
+func (o ErrorOptions) logger() *slog.Logger {
 	if o.Logger != nil {
 		return o.Logger
 	}
 	return slog.Default()
 }
 
-// NewErrorHandler 构造 grpc-gateway 统一错误处理器（runtime.WithErrorHandler
-// 的注入物）。行为对齐 torchwood HTTPErrorHandler：
+func (o ErrorOptions) errorID() string {
+	if o.ErrorID != nil {
+		return o.ErrorID()
+	}
+	return NewErrorID()
+}
+
+// DefaultErrorEncoder 返回安全默认错误编码器：
 //
-//   - grpc code → HTTP 状态码：内置表（含 Canceled→499），CodeToHTTP 可覆盖；
-//   - Internal/Unknown 脱敏为通用文案 "internal server error"，生成 error_id
-//     一并下发，原始消息连同 error_id 记日志（fail-closed，不泄内部细节）；
-//   - 429 响应从 status details 提取 errdetails.RetryInfo 作为 Retry-After
-//     （整秒向上取整、至少 1s；无 detail 不设头）；
-//   - 错误体经 mux 注入的 marshaler（protojson）写 JSON，
-//     Content-Type: application/json。
-func NewErrorHandler(b ErrorBodyBuilder, o HTTPOptions) runtime.ErrorHandlerFunc {
-	return func(ctx context.Context, mux *runtime.ServeMux, marshaler runtime.Marshaler, w http.ResponseWriter, r *http.Request, err error) {
+//   - code→HTTP：DefaultCodeToHTTP，可覆盖；
+//   - Internal/Unknown 脱敏 + error_id；
+//   - 429 从 RetryInfo 提取 Retry-After；
+//   - body 为普通 map（非 proto），字段：code/message/error_id。
+func DefaultErrorEncoder(opts ErrorOptions) ErrorEncoder {
+	return ErrorEncoderFunc(func(ctx context.Context, err error) ErrorResponse {
 		st, ok := status.FromError(err)
 		if !ok || st == nil {
-			// 非状态错误（含 handler 被直接喂 nil 的异常形态）一律归 Internal。
-			// err 原样入日志（slog 对 nil 安全），不在这里解引用。
 			st = status.New(codes.Internal, "internal server error")
-			o.logger().ErrorContext(ctx, "http error: non-status error converted to internal",
-				"error", err, "code", st.Code().String())
+			opts.logger().ErrorContext(ctx, "http error: non-status error", "error", err)
 		}
-
-		httpStatus := o.codeToHTTP(st.Code())
-
+		httpStatus := opts.codeToHTTP(st.Code())
 		message := st.Message()
-		errorID := NewErrorID()
-		if o.sanitizeInternal() && (st.Code() == codes.Internal || st.Code() == codes.Unknown) {
-			o.logger().ErrorContext(ctx, "http response: internal error sanitized",
-				"code", st.Code().String(), "original_message", st.Message(),
-				"error_id", errorID, "path", r.URL.Path)
+		errorID := opts.errorID()
+		if opts.sanitize(st.Code()) {
+			opts.logger().ErrorContext(ctx, "http response: sanitized",
+				"code", st.Code().String(), "original_message", st.Message(), "error_id", errorID)
 			message = "internal server error"
 		}
-
-		// 429 携带 Retry-After：从 status 的 RetryInfo detail 提取建议退避
-		// （整秒向上取整）；无 detail 时不设头，由客户端自行退避。
-		if httpStatus == http.StatusTooManyRequests {
+		headers := make(http.Header)
+		if httpStatus == http.StatusTooManyRequests && !opts.DisableRetryAfter {
 			if retryAfter, ok := retryAfterSeconds(st); ok {
-				w.Header().Set("Retry-After", retryAfter)
+				headers.Set("Retry-After", retryAfter)
 			}
 		}
+		return ErrorResponse{
+			Status:  httpStatus,
+			Body:    map[string]any{"code": opts.codeString(st.Code()), "message": message, "error_id": errorID},
+			Headers: headers,
+		}
+	})
+}
 
-		resp := b.Build(st.Code(), message, errorID)
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(httpStatus)
+// NewEncoderErrorHandler 把 ErrorEncoder 适配为 grpc-gateway 错误处理器
+// （runtime.WithErrorHandler 的注入物）。
+func NewEncoderErrorHandler(e ErrorEncoder) runtime.ErrorHandlerFunc {
+	if e == nil {
+		e = DefaultErrorEncoder(ErrorOptions{})
+	}
+	return func(ctx context.Context, _ *runtime.ServeMux, marshaler runtime.Marshaler, w http.ResponseWriter, r *http.Request, err error) {
+		resp := e.Encode(ctx, err)
+		if resp.Status == 0 {
+			resp.Status = http.StatusInternalServerError
+		}
+		for k, vs := range resp.Headers {
+			for _, v := range vs {
+				w.Header().Add(k, v)
+			}
+		}
+		if w.Header().Get("Content-Type") == "" {
+			w.Header().Set("Content-Type", "application/json")
+		}
+		w.WriteHeader(resp.Status)
+		if resp.Body == nil {
+			return
+		}
 		m := marshaler
 		if m == nil {
 			m = NewMarshaler()
 		}
-		data, merr := m.Marshal(resp)
+		data, merr := m.Marshal(resp.Body)
 		if merr != nil {
-			o.logger().ErrorContext(ctx, "failed to encode error response",
-				"error", merr, "error_id", errorID)
+			slog.Default().ErrorContext(ctx, "failed to encode error body", "error", merr)
 			return
 		}
-		if _, werr := w.Write(append(data, '\n')); werr != nil {
-			o.logger().ErrorContext(ctx, "failed to write error response",
-				"error", werr, "error_id", errorID)
-		}
+		_, _ = w.Write(append(data, '\n'))
 	}
 }
 
-// codeToHTTP 按自定义映射优先、内置表兜底解析 HTTP 状态码。
-func (o HTTPOptions) codeToHTTP(code codes.Code) int {
-	if v, ok := o.CodeToHTTP[code]; ok {
-		return v
+// WriteError 是给 authn/authz HTTP 中间件复用的便捷写出函数。
+func WriteError(w http.ResponseWriter, r *http.Request, err error, e ErrorEncoder) {
+	if e == nil {
+		e = DefaultErrorEncoder(ErrorOptions{})
 	}
-	return DefaultCodeToHTTP(code)
+	resp := e.Encode(r.Context(), err)
+	if resp.Status == 0 {
+		resp.Status = http.StatusInternalServerError
+	}
+	for k, vs := range resp.Headers {
+		for _, v := range vs {
+			w.Header().Add(k, v)
+		}
+	}
+	if w.Header().Get("Content-Type") == "" {
+		w.Header().Set("Content-Type", "application/json")
+	}
+	w.WriteHeader(resp.Status)
+	if resp.Body == nil {
+		return
+	}
+	var data []byte
+	var merr error
+	switch b := resp.Body.(type) {
+	case proto.Message:
+		data, merr = NewMarshaler().Marshal(b)
+	case json.RawMessage:
+		data = b
+	case []byte:
+		data = b
+	default:
+		data, merr = json.Marshal(b)
+	}
+	if merr != nil {
+		slog.Default().ErrorContext(r.Context(), "failed to encode error body", "error", merr)
+		return
+	}
+	_, _ = w.Write(append(data, '\n'))
 }
 
 // DefaultCodeToHTTP 是内置 grpc code → HTTP 状态码映射表

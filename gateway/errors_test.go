@@ -5,73 +5,32 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
-	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/durationpb"
 )
 
-// fakeBuilder 用 errdetails.ErrorInfo 充当错误体（库测试不引入项目错误契约），
-// 把 Build 收到的 (code, message, errorID) 全部投影进字段供断言。
-type fakeBuilder struct {
-	mapped map[codes.Code]any
-
-	lastCode    codes.Code
-	lastMessage string
-	lastErrorID string
-	buildCalls  int
+func discardLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
-func (b *fakeBuilder) Build(code codes.Code, message, errorID string) proto.Message {
-	b.buildCalls++
-	b.lastCode, b.lastMessage, b.lastErrorID = code, message, errorID
-	ec := ""
-	if s, ok := b.MapErrorCode(code).(string); ok {
-		ec = s
-	}
-	return &errdetails.ErrorInfo{
-		Reason:   code.String(),
-		Domain:   message,
-		Metadata: map[string]string{"error_id": errorID, "error_code": ec},
-	}
-}
-
-func (b *fakeBuilder) MapErrorCode(code codes.Code) any {
-	if v, ok := b.mapped[code]; ok {
-		return v
-	}
-	return nil
-}
-
-// compile-time：接口形状与库默认序列化器实现必须成立。
-var (
-	_ ErrorBodyBuilder  = (*fakeBuilder)(nil)
-	_ runtime.Marshaler = NewMarshaler()
-)
-
-func errorHandlerForTest(b *fakeBuilder, o HTTPOptions) runtime.ErrorHandlerFunc {
-	if b == nil {
-		b = &fakeBuilder{}
-	}
-	return NewErrorHandler(b, o)
-}
-
-// doErrorRequest 经 httptest 直接驱动错误处理器（mux 传 nil、marshaler 传 nil，
-// 覆盖 handler 内置回退路径）。
-func doErrorRequest(t *testing.T, h runtime.ErrorHandlerFunc, err error) *httptest.ResponseRecorder {
+// doErrorRequest 经 httptest 直接驱动 NewEncoderErrorHandler（mux 传 nil、
+// marshaler 传 nil，覆盖 handler 内置回退路径）。
+func doErrorRequest(t *testing.T, e ErrorEncoder, err error) *httptest.ResponseRecorder {
 	t.Helper()
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/v1/things", nil)
-	h(context.Background(), nil, nil, rec, req, err)
+	NewEncoderErrorHandler(e)(context.Background(), nil, nil, rec, req, err)
 	return rec
 }
 
@@ -97,29 +56,30 @@ func TestErrorHandlerMapsCodeToHTTP(t *testing.T) {
 		{codes.DataLoss, 500},
 		{codes.Internal, 500},
 	}
-	h := errorHandlerForTest(nil, HTTPOptions{})
+	enc := DefaultErrorEncoder(ErrorOptions{Logger: discardLogger()})
 	for _, tc := range cases {
-		rec := doErrorRequest(t, h, status.New(tc.code, "boom").Err())
+		rec := doErrorRequest(t, enc, status.New(tc.code, "boom").Err())
 		if rec.Code != tc.want {
 			t.Errorf("code %s → HTTP %d, want %d", tc.code, rec.Code, tc.want)
 		}
 	}
-	// OK 档只存在于内置表（错误处理器收到 nil error 时按安全语义归 Internal）。
+	// OK 档只存在于内置表。
 	if got := DefaultCodeToHTTP(codes.OK); got != 200 {
 		t.Errorf("DefaultCodeToHTTP(OK) = %d, want 200", got)
 	}
 }
 
 func TestErrorHandlerCustomCodeToHTTPOverride(t *testing.T) {
-	h := errorHandlerForTest(nil, HTTPOptions{
+	enc := DefaultErrorEncoder(ErrorOptions{
+		Logger:     discardLogger(),
 		CodeToHTTP: map[codes.Code]int{codes.NotFound: 410},
 	})
-	rec := doErrorRequest(t, h, status.New(codes.NotFound, "gone").Err())
+	rec := doErrorRequest(t, enc, status.New(codes.NotFound, "gone").Err())
 	if rec.Code != 410 {
 		t.Fatalf("自定义映射未生效：HTTP %d, want 410", rec.Code)
 	}
 	// 未声明条目回落内置表。
-	rec = doErrorRequest(t, h, status.New(codes.Unauthenticated, "no").Err())
+	rec = doErrorRequest(t, enc, status.New(codes.Unauthenticated, "no").Err())
 	if rec.Code != 401 {
 		t.Fatalf("未覆盖条目应回落内置表：HTTP %d, want 401", rec.Code)
 	}
@@ -127,27 +87,25 @@ func TestErrorHandlerCustomCodeToHTTPOverride(t *testing.T) {
 
 func TestErrorHandlerSanitizesInternalAndUnknown(t *testing.T) {
 	secret := "db password=hunter2"
-	h := errorHandlerForTest(nil, HTTPOptions{})
+	enc := DefaultErrorEncoder(ErrorOptions{Logger: discardLogger()})
 	for _, code := range []codes.Code{codes.Internal, codes.Unknown} {
-		b := &fakeBuilder{}
-		h := NewErrorHandler(b, HTTPOptions{})
-		rec := doErrorRequest(t, h, status.New(code, secret).Err())
-
+		rec := doErrorRequest(t, enc, status.New(code, secret).Err())
 		if rec.Code != 500 {
 			t.Fatalf("%s → HTTP %d, want 500", code, rec.Code)
 		}
 		if bytes.Contains(rec.Body.Bytes(), []byte("hunter2")) {
 			t.Fatalf("%s 响应体泄漏原始消息: %s", code, rec.Body.String())
 		}
-		if b.lastMessage != "internal server error" {
-			t.Fatalf("%s 传给 Build 的消息应为脱敏文案，得到 %q", code, b.lastMessage)
+		var body map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
 		}
-		if b.lastCode != code {
-			t.Fatalf("Build 收到 code %s, want %s", b.lastCode, code)
+		if body["message"] != "internal server error" {
+			t.Fatalf("%s 错误体消息应为脱敏文案: %s", code, rec.Body.String())
 		}
 	}
 	// 非 Internal/Unknown 不脱敏。
-	rec := doErrorRequest(t, h, status.New(codes.NotFound, secret).Err())
+	rec := doErrorRequest(t, enc, status.New(codes.NotFound, secret).Err())
 	if !bytes.Contains(rec.Body.Bytes(), []byte("hunter2")) {
 		t.Fatalf("NotFound 应原样下发消息: %s", rec.Body.String())
 	}
@@ -156,8 +114,8 @@ func TestErrorHandlerSanitizesInternalAndUnknown(t *testing.T) {
 func TestErrorHandlerLogsOriginalMessageOnSanitize(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, nil))
-	h := errorHandlerForTest(nil, HTTPOptions{Logger: logger})
-	doErrorRequest(t, h, status.New(codes.Internal, "the-secret").Err())
+	enc := DefaultErrorEncoder(ErrorOptions{Logger: logger})
+	doErrorRequest(t, enc, status.New(codes.Internal, "the-secret").Err())
 
 	logged := buf.String()
 	if !bytes.Contains([]byte(logged), []byte("the-secret")) {
@@ -169,16 +127,14 @@ func TestErrorHandlerLogsOriginalMessageOnSanitize(t *testing.T) {
 }
 
 func TestErrorHandlerEmitsErrorID(t *testing.T) {
-	b := &fakeBuilder{}
-	h := NewErrorHandler(b, HTTPOptions{})
-	rec := doErrorRequest(t, h, status.New(codes.NotFound, "x").Err())
+	enc := DefaultErrorEncoder(ErrorOptions{Logger: discardLogger()})
+	rec := doErrorRequest(t, enc, status.New(codes.NotFound, "x").Err())
 
 	var body map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("响应体不是 JSON: %v\n%s", err, rec.Body.String())
 	}
-	meta, _ := body["metadata"].(map[string]any)
-	id, _ := meta["error_id"].(string)
+	id, _ := body["error_id"].(string)
 	if id == "" {
 		t.Fatalf("响应体缺少 error_id: %s", rec.Body.String())
 	}
@@ -186,17 +142,13 @@ func TestErrorHandlerEmitsErrorID(t *testing.T) {
 		t.Fatalf("error_id 形态异常（期望 32 位十六进制）: %q", id)
 	}
 	// 两次请求 error_id 不重复。
-	rec2 := doErrorRequest(t, h, status.New(codes.NotFound, "x").Err())
+	rec2 := doErrorRequest(t, enc, status.New(codes.NotFound, "x").Err())
 	var body2 map[string]any
 	if err := json.Unmarshal(rec2.Body.Bytes(), &body2); err != nil {
 		t.Fatal(err)
 	}
-	meta2, _ := body2["metadata"].(map[string]any)
-	if meta2["error_id"] == id {
+	if body2["error_id"] == id {
 		t.Fatalf("error_id 重复: %s", id)
-	}
-	if b.buildCalls != 2 {
-		t.Fatalf("Build 调用次数 = %d, want 2", b.buildCalls)
 	}
 }
 
@@ -250,9 +202,9 @@ func TestErrorHandlerRetryAfter(t *testing.T) {
 			wantHas: false,
 		},
 	}
+	enc := DefaultErrorEncoder(ErrorOptions{Logger: discardLogger()})
 	for _, tc := range cases {
-		h := errorHandlerForTest(nil, HTTPOptions{})
-		rec := doErrorRequest(t, h, tc.err)
+		rec := doErrorRequest(t, enc, tc.err)
 		got := rec.Header().Get("Retry-After")
 		if tc.wantHas && got != tc.wantHead {
 			t.Errorf("%s: Retry-After = %q, want %q", tc.name, got, tc.wantHead)
@@ -264,38 +216,40 @@ func TestErrorHandlerRetryAfter(t *testing.T) {
 }
 
 func TestErrorHandlerNonStatusError(t *testing.T) {
-	b := &fakeBuilder{}
-	h := NewErrorHandler(b, HTTPOptions{})
-	rec := doErrorRequest(t, h, errors.New("plain boom"))
+	enc := DefaultErrorEncoder(ErrorOptions{Logger: discardLogger()})
+	rec := doErrorRequest(t, enc, errors.New("plain boom"))
 	if rec.Code != 500 {
 		t.Fatalf("非状态错误应归 Internal：HTTP %d", rec.Code)
 	}
-	if b.lastCode != codes.Internal || b.lastMessage != "internal server error" {
-		t.Fatalf("非状态错误应走脱敏路径: code=%s message=%q", b.lastCode, b.lastMessage)
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["message"] != "internal server error" {
+		t.Fatalf("非状态错误应走脱敏路径: %s", rec.Body.String())
 	}
 }
 
-func TestErrorHandlerBodyShape(t *testing.T) {
-	b := &fakeBuilder{mapped: map[codes.Code]any{codes.NotFound: "NOT_FOUND"}}
-	h := NewErrorHandler(b, HTTPOptions{})
-	rec := doErrorRequest(t, h, status.New(codes.NotFound, "no such thing").Err())
-
-	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+func TestNewEncoderErrorHandlerNilEncoder(t *testing.T) {
+	// nil encoder 回落安全默认，未注册路由形态的错误仍可写出。
+	rec := doErrorRequest(t, nil, status.New(codes.NotFound, "x").Err())
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
 		t.Fatalf("Content-Type = %q, want application/json", ct)
 	}
-	var body map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-		t.Fatalf("响应体不是 JSON: %v", err)
+}
+
+func TestWriteError(t *testing.T) {
+	rec := httptest.NewRecorder()
+	WriteError(rec, httptest.NewRequest(http.MethodGet, "/x", nil), status.Error(codes.NotFound, "missing"),
+		DefaultErrorEncoder(ErrorOptions{Logger: discardLogger(), ErrorID: func() string { return "e" }}))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d", rec.Code)
 	}
-	if body["reason"] != "NotFound" || body["domain"] != "no such thing" {
-		t.Fatalf("响应体字段不符: %s", rec.Body.String())
-	}
-	meta, _ := body["metadata"].(map[string]any)
-	if meta["error_code"] != "NOT_FOUND" {
-		t.Fatalf("MapErrorCode 结果未进入错误体: %s", rec.Body.String())
-	}
-	if _, ok := meta["error_id"].(string); !ok {
-		t.Fatalf("缺 error_id: %s", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), `"error_id":"e"`) {
+		t.Fatalf("body = %s", rec.Body.String())
 	}
 }
 

@@ -8,21 +8,16 @@ import (
 	"google.golang.org/grpc/metadata"
 )
 
-// MuxOptions 是 NewMux 的装配选项。
+// MuxOptions 是 NewMux 的装配选项，零值即安全默认。
 type MuxOptions struct {
-	// ErrorHandler 是旧式错误处理器；ErrorEncoder 优先。
-	ErrorHandler runtime.ErrorHandlerFunc
-	// ErrorEncoder 是新式错误编码器；nil 时回落到安全默认。
+	// ErrorEncoder 编码 gRPC 错误为 HTTP 响应；nil 时回落
+	// DefaultErrorEncoder(ErrorOptions{})。
 	ErrorEncoder ErrorEncoder
 
-	// IncomingExtra 追加入站放行的项目专属 header（传给 IncomingMatcher）。
-	IncomingExtra []string
+	// Headers 是入/出站 header 策略；零值等效 DefaultHeaderPolicy()。
+	// 项目专属放行/直透头在 Allow/Direct 里声明（覆盖默认列表）。
+	Headers HeaderPolicy
 
-	// OutgoingDirect 追加出站直透的项目专属 header（传给 OutgoingMatcher）。
-	OutgoingDirect []string
-
-	// HeaderPolicy 非 nil 时完全接管入/出站 header 策略。
-	HeaderPolicy *HeaderPolicy
 	// Marshaler 为空时使用 NewMarshaler()（snake_case）。
 	Marshaler runtime.Marshaler
 
@@ -34,30 +29,21 @@ type MuxOptions struct {
 }
 
 // NewMux 构造 grpc-gateway ServeMux（平移自 torchwood NewGRPCGatewayServer 的
-// mux 装配段）：统一错误处理器 + 入/出站 header matcher + 三个 marshaler 槽位
-// （*、*/*、application/json）全部装 NewMarshaler()。
+// mux 装配段）：统一错误编码器 + HeaderPolicy 驱动的入/出站 matcher + 三个
+// marshaler 槽位（*、*/*、application/json）全部装 NewMarshaler()。
 func NewMux(o MuxOptions) *runtime.ServeMux {
-	if o.ErrorEncoder != nil {
-		o.ErrorHandler = NewEncoderErrorHandler(o.ErrorEncoder)
-	}
-	if o.ErrorHandler == nil {
-		o.ErrorHandler = NewEncoderErrorHandler(DefaultErrorEncoder(ErrorOptions{}))
-	}
-	incoming := IncomingMatcher(o.IncomingExtra...)
-	outgoing := OutgoingMatcher(o.OutgoingDirect...)
-	if o.HeaderPolicy != nil {
-		policy := *o.HeaderPolicy
-		incoming = IncomingPolicy(policy)
-		outgoing = OutgoingPolicy(policy)
+	encoder := o.ErrorEncoder
+	if encoder == nil {
+		encoder = DefaultErrorEncoder(ErrorOptions{})
 	}
 	marshaler := o.Marshaler
 	if marshaler == nil {
 		marshaler = NewMarshaler()
 	}
 	opts := []runtime.ServeMuxOption{
-		runtime.WithErrorHandler(o.ErrorHandler),
-		runtime.WithIncomingHeaderMatcher(incoming),
-		runtime.WithOutgoingHeaderMatcher(outgoing),
+		runtime.WithErrorHandler(NewEncoderErrorHandler(encoder)),
+		runtime.WithIncomingHeaderMatcher(IncomingPolicy(o.Headers)),
+		runtime.WithOutgoingHeaderMatcher(OutgoingPolicy(o.Headers)),
 		runtime.WithMarshalerOption("*", marshaler),
 		runtime.WithMarshalerOption("*/*", marshaler),
 		runtime.WithMarshalerOption("application/json", marshaler),
