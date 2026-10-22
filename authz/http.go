@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/lynx-go/grpcapi/gateway"
 	"github.com/lynx-go/grpcapi/policy"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -130,28 +131,9 @@ func writeHTTPError(w http.ResponseWriter, r *http.Request, err error, opts HTTP
 	code := status.Code(err)
 	msg := status.Convert(err).Message()
 	if msg == "" {
-		msg = http.StatusText(httpStatusForCode(code))
+		msg = http.StatusText(gateway.DefaultCodeToHTTP(code))
 	}
-	http.Error(w, msg, httpStatusForCode(code))
-}
-
-func httpStatusForCode(code codes.Code) int {
-	switch code {
-	case codes.Unauthenticated:
-		return http.StatusUnauthorized
-	case codes.PermissionDenied:
-		return http.StatusForbidden
-	case codes.Unavailable:
-		return http.StatusServiceUnavailable
-	case codes.DeadlineExceeded:
-		return http.StatusGatewayTimeout
-	case codes.ResourceExhausted:
-		return http.StatusTooManyRequests
-	case codes.InvalidArgument:
-		return http.StatusBadRequest
-	case codes.NotFound:
-		return http.StatusNotFound
-	default:
-		return http.StatusInternalServerError
-	}
+	// 与 gateway 共用同一映射（GENERALIZATION：错误统一走 gateway 语义），
+	// 不再维护会漂移的私有副本。
+	http.Error(w, msg, gateway.DefaultCodeToHTTP(code))
 }

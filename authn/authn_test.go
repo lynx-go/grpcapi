@@ -211,3 +211,63 @@ func TestHTTPMiddleware(t *testing.T) {
 		t.Fatalf("duplicate bearer status = %d, want 401", rec.Code)
 	}
 }
+
+// fakeServerStream 携带自定义 ctx 的 ServerStream 桩。
+type fakeServerStream struct {
+	grpc.ServerStream
+	ctx context.Context
+}
+
+func (s *fakeServerStream) Context() context.Context { return s.ctx }
+
+func TestStreamInterceptor(t *testing.T) {
+	auth := fakeAuthenticator{name: "fake", fn: func(c authn.Credentials) (*principal.Principal, error) {
+		if c.BearerToken() == "good" {
+			return &principal.Principal{ID: "u1", Kind: principal.KindUser}, nil
+		}
+		return nil, status.Error(codes.Unauthenticated, "bad token")
+	}}
+	ic := authn.New(authn.Chain{auth}, authn.Options{}).Stream()
+	info := &grpc.StreamServerInfo{FullMethod: "/svc/Watch", IsClientStream: true, IsServerStream: true}
+
+	var got *principal.Principal
+	handler := func(_ any, ss grpc.ServerStream) error {
+		got, _ = principal.From(ss.Context())
+		return nil
+	}
+
+	// 有效凭证：principal 注入包装后 stream 的 ctx。
+	ss := &fakeServerStream{ctx: metadata.NewIncomingContext(context.Background(),
+		metadata.Pairs("authorization", "Bearer good"))}
+	if err := ic(nil, ss, info, handler); err != nil {
+		t.Fatalf("valid: %v", err)
+	}
+	if got == nil || got.ID != "u1" {
+		t.Fatalf("principal = %+v, want u1 on wrapped stream ctx", got)
+	}
+
+	// 无效凭证：Unauthenticated，handler 不执行。
+	called := false
+	handler = func(_ any, _ grpc.ServerStream) error { called = true; return nil }
+	ss = &fakeServerStream{ctx: metadata.NewIncomingContext(context.Background(),
+		metadata.Pairs("authorization", "Bearer bad"))}
+	if err := ic(nil, ss, info, handler); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("code = %v, want Unauthenticated", status.Code(err))
+	}
+	if called {
+		t.Fatal("handler should not run with invalid credentials")
+	}
+
+	// 无凭证：放行，由 authz 决定。
+	got = nil
+	handler = func(_ any, ss grpc.ServerStream) error {
+		got, _ = principal.From(ss.Context())
+		return nil
+	}
+	if err := ic(nil, &fakeServerStream{ctx: context.Background()}, info, handler); err != nil {
+		t.Fatalf("no credentials: %v", err)
+	}
+	if got != nil {
+		t.Fatal("no-credential stream should have no principal")
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/lynx-go/grpcapi/gateway"
 	"github.com/lynx-go/grpcapi/principal"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -220,24 +221,9 @@ func writeHTTPError(w http.ResponseWriter, r *http.Request, err error, opts HTTP
 		return
 	}
 	code := status.Code(err)
-	http.Error(w, strings.ToLower(code.String()), httpStatusForCode(code))
-}
-
-func httpStatusForCode(code codes.Code) int {
-	switch code {
-	case codes.Unauthenticated:
-		return http.StatusUnauthorized
-	case codes.PermissionDenied:
-		return http.StatusForbidden
-	case codes.Unavailable:
-		return http.StatusServiceUnavailable
-	case codes.DeadlineExceeded:
-		return http.StatusGatewayTimeout
-	case codes.ResourceExhausted:
-		return http.StatusTooManyRequests
-	default:
-		return http.StatusInternalServerError
-	}
+	// 与 gateway 共用同一映射（GENERALIZATION：错误统一走 gateway 语义），
+	// 不再维护会漂移的私有副本。
+	http.Error(w, strings.ToLower(code.String()), gateway.DefaultCodeToHTTP(code))
 }
 
 type authStream struct {

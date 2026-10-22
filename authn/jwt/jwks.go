@@ -24,9 +24,13 @@ type JWKS struct {
 	Client          *http.Client
 	RefreshInterval time.Duration
 
+	// mu 只保护 keys/fetchedAt 的内存读写，绝不持它做网络 IO。
 	mu        sync.Mutex
 	keys      map[string]any
 	fetchedAt time.Time
+	// refreshMu 串行化网络刷新：缓存过期时并发请求只有一个在 fetch，
+	// 其余在双检后直接复用其结果，不被网络往返串行阻塞。
+	refreshMu sync.Mutex
 }
 
 // NewJWKS 构造 JWKS key provider；URL 通常来自 OIDC discovery 的 jwks_uri。
@@ -60,22 +64,47 @@ func (j *JWKS) KeyFunc(token *jwtlib.Token) (any, error) {
 }
 
 func (j *JWKS) keysCached() (map[string]any, error) {
-	j.mu.Lock()
-	defer j.mu.Unlock()
-	now := time.Now()
-	if len(j.keys) > 0 && now.Sub(j.fetchedAt) < j.RefreshInterval {
-		return j.keys, nil
+	if keys, ok := j.freshKeys(); ok {
+		return keys, nil
+	}
+	j.refreshMu.Lock()
+	defer j.refreshMu.Unlock()
+	// 双检：排队等刷新锁期间可能已有并发刷新完成。
+	if keys, ok := j.freshKeys(); ok {
+		return keys, nil
 	}
 	keys, err := j.fetch()
 	if err != nil {
-		if len(j.keys) > 0 {
-			return j.keys, nil // 刷新失败时使用旧缓存
+		// 刷新失败时继续用旧缓存（可能已过期）：认证保持可用，下个
+		// 请求会再次尝试刷新。
+		if keys, ok := j.cachedKeys(); ok {
+			return keys, nil
 		}
 		return nil, err
 	}
+	j.mu.Lock()
 	j.keys = keys
-	j.fetchedAt = now
+	j.fetchedAt = time.Now()
+	j.mu.Unlock()
 	return keys, nil
+}
+
+func (j *JWKS) freshKeys() (map[string]any, bool) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if len(j.keys) > 0 && time.Since(j.fetchedAt) < j.RefreshInterval {
+		return j.keys, true
+	}
+	return nil, false
+}
+
+func (j *JWKS) cachedKeys() (map[string]any, bool) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if len(j.keys) > 0 {
+		return j.keys, true
+	}
+	return nil, false
 }
 
 func (j *JWKS) fetch() (map[string]any, error) {

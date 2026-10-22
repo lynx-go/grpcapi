@@ -3,6 +3,7 @@ package interceptor
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 
 	"buf.build/go/protovalidate"
@@ -27,6 +28,9 @@ type ValidateInterceptor struct {
 	// 构造器签名无 error，失败在首个被校验请求上以 Internal 暴露
 	// （fail-closed，不放行未校验请求）。
 	initErr error
+	// logger 记录初始化/求值故障细节；nil 时回落 slog.Default()。
+	// Internal 的 message 会原样到达直接 gRPC 客户端，细节只进日志。
+	logger *slog.Logger
 }
 
 // NewValidate 构造校验拦截器。
@@ -78,29 +82,41 @@ func (v *ValidateInterceptor) validateMessage(m any) error {
 		return nil
 	}
 	if err := v.validator.Validate(msg); err != nil {
-		return validateStatusError(err)
+		return v.validateStatusError(err)
 	}
 	return nil
 }
 
-func (v *ValidateInterceptor) initError() error {
-	msg := "request validation rules failed to initialize"
-	if v != nil && v.initErr != nil {
-		msg += ": " + v.initErr.Error()
+func (v *ValidateInterceptor) errorLogger() *slog.Logger {
+	if v != nil && v.logger != nil {
+		return v.logger
 	}
+	return slog.Default()
+}
+
+func (v *ValidateInterceptor) initError() error {
+	// 客户端只收通用文案；initErr 细节（CEL 环境配置）进日志。
+	const msg = "request validation rules failed to initialize"
+	var detail error
+	if v != nil {
+		detail = v.initErr
+	}
+	v.errorLogger().Error(msg, "error", detail)
 	return status.Error(codes.Internal, msg)
 }
 
 // validateStatusError 映射校验错误：规则违规 → InvalidArgument（多条以
 // "; " 连接为单行，经 gateway 错误处理器原样进入 error.message）；CEL
 // 编译/求值故障 → Internal（注解缺陷属服务端 bug，fail-closed 拒绝而非
-// 放行未校验请求）。
-func validateStatusError(err error) error {
+// 放行未校验请求），原始错误只进日志不下发。
+func (v *ValidateInterceptor) validateStatusError(err error) error {
 	var violations *protovalidate.ValidationError
 	if errors.As(err, &violations) {
 		return status.Error(codes.InvalidArgument, formatViolations(violations.Violations))
 	}
-	return status.Error(codes.Internal, "request validation rules failed to evaluate: "+err.Error())
+	const msg = "request validation rules failed to evaluate"
+	v.errorLogger().Error(msg, "error", err)
+	return status.Error(codes.Internal, msg)
 }
 
 func formatViolations(violations []*protovalidate.Violation) string {

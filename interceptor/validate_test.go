@@ -79,6 +79,10 @@ func TestValidateCELFailureFailsClosed(t *testing.T) {
 	if status.Code(err) != codes.Internal {
 		t.Fatalf("code = %s, want Internal (fail-closed), err = %v", status.Code(err), err)
 	}
+	// 客户端只收通用文案：CEL 求值错误细节只进日志，不进 status message。
+	if st := status.Convert(err); st.Message() != "request validation rules failed to evaluate" {
+		t.Fatalf("message = %q, want generic text (details must stay in logs)", st.Message())
+	}
 }
 
 func TestValidateFrameworkExempt(t *testing.T) {
