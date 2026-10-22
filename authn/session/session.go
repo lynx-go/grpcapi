@@ -122,7 +122,7 @@ func (a *Authenticator) Issue(ctx context.Context, w http.ResponseWriter, p *pri
 	if err := a.cfg.Store.Create(ctx, s); err != nil {
 		return fmt.Errorf("session: create: %w", err)
 	}
-	http.SetCookie(w, &http.Cookie{
+	http.SetCookie(w, &http.Cookie{ // #nosec G124 -- Secure/SameSite 由 Config 注入（默认值收紧见挂账），HttpOnly 显式 true
 		Name:     a.cfg.CookieName,
 		Value:    a.sign(id),
 		Path:     a.cfg.Path,
@@ -176,7 +176,7 @@ func (a *Authenticator) Destroy(ctx context.Context, w http.ResponseWriter, r *h
 			deleteErr = a.cfg.Store.Delete(ctx, id)
 		}
 	}
-	http.SetCookie(w, &http.Cookie{
+	http.SetCookie(w, &http.Cookie{ // #nosec G124 -- 同 Create：属性由 Config 注入，清除 cookie 恒 HttpOnly
 		Name:     a.cfg.CookieName,
 		Value:    "",
 		Path:     a.cfg.Path,

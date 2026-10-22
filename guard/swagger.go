@@ -469,6 +469,7 @@ func swaggerNoDefinition(tb testing.TB, root string, subdirs []string, banned st
 	var offenders []string
 	for _, sub := range subdirs {
 		dir := filepath.Join(root, sub)
+		// #nosec G122 -- guard 只遍历仓内/项目 gen 目录的可信文档，无符号链接攻击面。
 		err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
 				return err

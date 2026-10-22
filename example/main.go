@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"log"
+	"math"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"google.golang.org/grpc"
@@ -70,7 +71,10 @@ type echoServer struct {
 }
 
 func (echoServer) Shout(_ context.Context, req *echov1.ShoutRequest) (*echov1.ShoutResponse, error) {
-	return &echov1.ShoutResponse{Text: req.GetText(), Length: int32(len(req.GetText()))}, nil
+	return &echov1.ShoutResponse{
+		Text:   req.GetText(),
+		Length: int32(min(len(req.GetText()), math.MaxInt32)),
+	}, nil
 }
 
 func (echoServer) Hear(_ context.Context, req *echov1.HearRequest) (*echov1.HearResponse, error) {

@@ -99,7 +99,7 @@ func assertDocUnchanged(tb testing.TB, rendered []byte, path string) {
 		return
 	}
 	actual := path + ".actual"
-	if werr := os.WriteFile(actual, rendered, 0o644); werr != nil {
+	if werr := os.WriteFile(actual, rendered, 0o600); werr != nil {
 		tb.Logf("写出 %s 失败: %v", actual, werr)
 	}
 	tb.Fatalf("文档与渲染结果漂移（首个差异在第 %d 行；磁盘 %d 字节 vs 渲染 %d 字节）：已写出 %s 供比对，确认后请覆盖磁盘文件并随策略变更一起提交",

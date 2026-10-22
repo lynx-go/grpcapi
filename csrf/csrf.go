@@ -66,7 +66,7 @@ func (m *Middleware) Issue(w http.ResponseWriter) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	http.SetCookie(w, &http.Cookie{
+	http.SetCookie(w, &http.Cookie{ // #nosec G124 -- Secure/SameSite 由 Config 注入；HttpOnly 必须 false（前端需读 token 回写 header）
 		Name:     m.cfg.CookieName,
 		Value:    token,
 		Path:     m.cfg.CookiePath,
