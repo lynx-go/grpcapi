@@ -1109,8 +1109,9 @@ type Config struct {
     Store      Store
     SigningKey []byte // HMAC；cookie 只放 session ID + 签名
     TTL        time.Duration
-    SameSite   http.SameSite
-    Secure     bool
+    SameSite       http.SameSite
+    // Secure 恒 true；InsecureCookie 显式退出（本地开发）。
+    InsecureCookie bool
 }
 func New(Config) (*Authenticator, error)
 func (a *Authenticator) Issue(ctx, w, p) error
@@ -1150,7 +1151,10 @@ func New(Config) (*Enricher, error)
 - Double-submit cookie：session cookie `HttpOnly + Secure + SameSite=Lax/Strict`，
   CSRF cookie 可被 JS 读取，请求头 `X-CSRF-Token` 与 cookie 值一致。
 - 只校验 unsafe method（POST/PUT/PATCH/DELETE）；GET/HEAD/OPTIONS 跳过。
-- 额外校验 `Origin`/`Referer`，允许列表由项目配置。
+- 额外校验 `Origin`/`Referer`：`AllowedOrigins` 非空 = 严格允许列表
+  （无 Origin/Referer 的 unsafe 请求也拒绝）；空 = 仅同源（host 必须与
+  请求 Host 一致，缺失时交由 token 比对防线）。cookie 恒带 `Secure`，
+  `InsecureCookie` 显式退出供本地开发。
 - `session.Authenticator` 实现 `RequiresCSRF() bool`；`server.New` 发现 session
   认证但没有 CSRF 配置 → 启动失败（`AllowNoCSRF` 可放宽）。
 

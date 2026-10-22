@@ -337,3 +337,56 @@ func TestServerRejectsAuthzBeforeAuthn(t *testing.T) {
 		t.Fatalf("error = %v, want authz-before-authn error", err)
 	}
 }
+
+func TestServerEnforcesHTTPBodyLimit(t *testing.T) {
+	// HTTP 请求体上限与 MaxRecvMsgSize 同源：protojson 解码不受 gRPC
+	// 消息上限保护，超限 body 必须在读入阶段失败，而不是进到业务语义。
+	s, err := server.New(context.Background(), server.Config{
+		Policy:               testSet(t),
+		Services:             []server.Registration{testRegistration(t)},
+		GRPCAddr:             "127.0.0.1:0",
+		HTTPAddr:             "127.0.0.1:0",
+		DisableHealth:        true,
+		AllowNoAuthenticator: true,
+		MaxRecvMsgSize:       64,
+	})
+	if err != nil {
+		t.Fatalf("server.New: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- s.Run(ctx) }()
+
+	var httpAddr string
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		_, httpAddr = s.Addrs()
+		if httpAddr != "" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if httpAddr == "" {
+		t.Fatal("server did not start")
+	}
+
+	post := func(body string) int {
+		resp, err := http.Post("http://"+httpAddr+"/v1/echo:shout", "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("POST: %v", err)
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	// 超限 body：在读入/解码阶段失败（不得落入 authz 的 403，说明请求
+	// 根本没走到业务语义）。
+	if got := post(`{"text":"` + strings.Repeat("x", 1024) + `"}`); got < 400 || got == http.StatusForbidden {
+		t.Fatalf("oversized body status = %d, want >=400 decode failure before authz", got)
+	}
+	// 正常 body：解码成功，到达 authz 被拒（无 principal → 401）。
+	if got := post(`{"text":"hi"}`); got != http.StatusUnauthorized {
+		t.Fatalf("normal body status = %d, want 401 (decoded, authz denied)", got)
+	}
+}

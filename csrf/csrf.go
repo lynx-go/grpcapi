@@ -23,11 +23,16 @@ type Config struct {
 	HeaderName string
 	// CookiePath 默认 "/"。
 	CookiePath string
-	// Secure 生产环境应为 true。
-	Secure bool
+	// InsecureCookie 显式允许在非 HTTPS 环境下发 cookie（本地开发）。
+	// 默认 false = cookie 恒带 Secure。
+	InsecureCookie bool
 	// SameSite 默认 Lax。
 	SameSite http.SameSite
-	// AllowedOrigins 非空时校验 Origin/Referer 的来源。
+	// AllowedOrigins 校验 Origin/Referer 的来源。非空 = 严格允许列表
+	// （无 Origin/Referer 的 unsafe 请求也拒绝，非浏览器客户端请用
+	// Exempt 放行）；空 = 仅同源（Origin/Referer 的 host 必须与请求
+	// Host 一致，缺失时交由 token 比对防线）。此前空列表完全跳过来源
+	// 校验的不安全默认已移除。
 	AllowedOrigins []string
 	// Exempt 返回 true 时跳过该请求的 CSRF 校验（如使用独立凭证的 webhook）。
 	// 默认 nil = 所有 unsafe 请求都校验。
@@ -66,11 +71,11 @@ func (m *Middleware) Issue(w http.ResponseWriter) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	http.SetCookie(w, &http.Cookie{ // #nosec G124 -- Secure/SameSite 由 Config 注入；HttpOnly 必须 false（前端需读 token 回写 header）
+	http.SetCookie(w, &http.Cookie{ // #nosec G124 -- Secure 恒 true（除非显式 InsecureCookie）；HttpOnly 必须 false（前端需读 token 回写 header）
 		Name:     m.cfg.CookieName,
 		Value:    token,
 		Path:     m.cfg.CookiePath,
-		Secure:   m.cfg.Secure,
+		Secure:   !m.cfg.InsecureCookie,
 		SameSite: m.cfg.SameSite,
 		HttpOnly: false, // 前端必须可读，才能写入 header
 	})
@@ -108,12 +113,23 @@ func (m *Middleware) Handler(next http.Handler) http.Handler {
 }
 
 func (m *Middleware) originAllowed(r *http.Request) bool {
-	if len(m.cfg.AllowedOrigins) == 0 {
-		return true
-	}
 	origin := r.Header.Get("Origin")
 	if origin == "" {
 		origin = r.Header.Get("Referer")
+	}
+	if len(m.cfg.AllowedOrigins) == 0 {
+		// 未配置允许列表 = 仅同源：跨站 unsafe 请求浏览器必带 Origin，
+		// host 与请求 Host 不同即拒绝；非浏览器客户端不带 Origin/
+		// Referer，交由 token 比对防线（host 比对足够覆盖 CSRF 威胁，
+		// 方案在 TLS 终结之后拿不到可靠 scheme）。
+		if origin == "" {
+			return true
+		}
+		u, err := url.Parse(origin)
+		if err != nil {
+			return false
+		}
+		return strings.EqualFold(u.Host, r.Host)
 	}
 	if origin == "" {
 		return false

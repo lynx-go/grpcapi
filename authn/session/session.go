@@ -54,10 +54,13 @@ type Config struct {
 	// TTL 默认 24h。
 	TTL time.Duration
 	// Path 默认 "/"。
-	Path     string
-	Secure   bool
-	SameSite http.SameSite
-	Now      func() time.Time
+	Path string
+	// InsecureCookie 显式允许在非 HTTPS 环境下发 cookie（本地开发）。
+	// 默认 false = cookie 恒带 Secure（旧 Secure bool 默认 false 的
+	// 不安全默认已移除）。
+	InsecureCookie bool
+	SameSite       http.SameSite
+	Now            func() time.Time
 }
 
 func (c Config) normalize() Config {
@@ -122,13 +125,13 @@ func (a *Authenticator) Issue(ctx context.Context, w http.ResponseWriter, p *pri
 	if err := a.cfg.Store.Create(ctx, s); err != nil {
 		return fmt.Errorf("session: create: %w", err)
 	}
-	http.SetCookie(w, &http.Cookie{ // #nosec G124 -- Secure/SameSite 由 Config 注入（默认值收紧见挂账），HttpOnly 显式 true
+	http.SetCookie(w, &http.Cookie{ // #nosec G124 -- Secure 恒 true（除非显式 InsecureCookie），HttpOnly 显式 true
 		Name:     a.cfg.CookieName,
 		Value:    a.sign(id),
 		Path:     a.cfg.Path,
 		Expires:  s.ExpiresAt,
 		MaxAge:   int(a.cfg.TTL.Seconds()),
-		Secure:   a.cfg.Secure,
+		Secure:   !a.cfg.InsecureCookie,
 		HttpOnly: true,
 		SameSite: a.cfg.SameSite,
 	})
@@ -176,12 +179,12 @@ func (a *Authenticator) Destroy(ctx context.Context, w http.ResponseWriter, r *h
 			deleteErr = a.cfg.Store.Delete(ctx, id)
 		}
 	}
-	http.SetCookie(w, &http.Cookie{ // #nosec G124 -- 同 Create：属性由 Config 注入，清除 cookie 恒 HttpOnly
+	http.SetCookie(w, &http.Cookie{ // #nosec G124 -- 同 Create：Secure 恒 true（除非显式 InsecureCookie），清除恒 HttpOnly
 		Name:     a.cfg.CookieName,
 		Value:    "",
 		Path:     a.cfg.Path,
 		MaxAge:   -1,
-		Secure:   a.cfg.Secure,
+		Secure:   !a.cfg.InsecureCookie,
 		HttpOnly: true,
 		SameSite: a.cfg.SameSite,
 	})

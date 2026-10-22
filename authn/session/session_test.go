@@ -99,3 +99,33 @@ func TestDestroy(t *testing.T) {
 		t.Fatalf("store not empty: %+v", store)
 	}
 }
+
+func TestSessionCookieSecureByDefault(t *testing.T) {
+	// session cookie 默认恒带 Secure；显式 InsecureCookie 才允许非 HTTPS。
+	newAuth := func(insecure bool) *session.Authenticator {
+		a, err := session.New(session.Config{
+			Store:          memStore{},
+			SigningKey:     []byte("test-key"),
+			InsecureCookie: insecure,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return a
+	}
+	p := &principal.Principal{ID: "u1"}
+	rec := httptest.NewRecorder()
+	if err := newAuth(false).Issue(context.Background(), rec, p); err != nil {
+		t.Fatal(err)
+	}
+	if c := rec.Result().Cookies()[0]; !c.Secure || !c.HttpOnly {
+		t.Fatalf("session cookie Secure=%v HttpOnly=%v, want Secure by default", c.Secure, c.HttpOnly)
+	}
+	rec = httptest.NewRecorder()
+	if err := newAuth(true).Issue(context.Background(), rec, p); err != nil {
+		t.Fatal(err)
+	}
+	if c := rec.Result().Cookies()[0]; c.Secure {
+		t.Fatal("InsecureCookie opt-out must drop Secure")
+	}
+}

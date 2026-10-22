@@ -504,6 +504,9 @@ func (s *Server) buildHTTP(ctx context.Context, set *policy.Set, surf *surface.S
 	if s.cfg.AccessLog {
 		h = accessLog(s.logger, h)
 	}
+	// 请求体上限与 gRPC MaxRecvMsgSize 同源（DESIGN §5.16）：HTTP 侧
+	// protojson 解码不受 gRPC 消息上限保护，超限 body 在读入时即失败。
+	h = withBodyLimit(h, int64(s.cfg.MaxRecvMsgSize))
 
 	routes := prefixedRoutes(surf, groups, s.cfg)
 	for i, op := range extraOps {
@@ -849,6 +852,17 @@ func safeHandle(mux *http.ServeMux, pattern string, h http.Handler) (err error) 
 	}()
 	mux.Handle(pattern, h)
 	return nil
+}
+
+// withBodyLimit 用 http.MaxBytesReader 限制请求体大小；超限在读入时
+// 报错（net/http 对未写响应的处理器补发 413）。
+func withBodyLimit(next http.Handler, n int64) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Body != nil {
+			r.Body = http.MaxBytesReader(w, r.Body, n)
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func accessLog(logger *slog.Logger, next http.Handler) http.Handler {

@@ -99,3 +99,62 @@ func TestOriginAllowlist(t *testing.T) {
 		t.Fatalf("good origin status = %d", rec.Code)
 	}
 }
+
+func TestEmptyAllowlistSameOriginOnly(t *testing.T) {
+	// 空允许列表 = 仅同源：跨站 Origin 拒绝（原为完全跳过校验的不安全
+	// 默认），同源放行，缺失 Origin/Referer 的非浏览器客户端交由 token
+	// 比对防线。
+	m := csrf.New(csrf.Config{})
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) })
+	run := func(origin string) int {
+		rec := httptest.NewRecorder()
+		m.Issue(rec)
+		cookie := rec.Result().Cookies()[0]
+		req := httptest.NewRequest(http.MethodPost, "/", nil)
+		req.Host = "api.example.com"
+		req.AddCookie(cookie)
+		req.Header.Set("X-CSRF-Token", cookie.Value)
+		if origin != "" {
+			req.Header.Set("Origin", origin)
+		}
+		rec = httptest.NewRecorder()
+		m.Handler(next).ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	if got := run("https://evil.example"); got != http.StatusForbidden {
+		t.Fatalf("cross-origin status = %d, want 403", got)
+	}
+	if got := run("https://api.example.com"); got != 200 {
+		t.Fatalf("same-origin status = %d, want 200", got)
+	}
+	if got := run("http://api.example.com:8080"); got != http.StatusForbidden {
+		t.Fatalf("same-host different port status = %d, want 403", got)
+	}
+	if got := run(""); got != 200 {
+		t.Fatalf("no origin (non-browser) status = %d, want 200 (token check still applies)", got)
+	}
+
+	// 缺失 Origin/Referer 时 token 校验依然生效。
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.Host = "api.example.com"
+	rec := httptest.NewRecorder()
+	m.Handler(next).ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("missing token status = %d, want 403", rec.Code)
+	}
+}
+
+func TestInsecureCookieOptOut(t *testing.T) {
+	// cookie 默认恒带 Secure；显式 InsecureCookie 才允许非 HTTPS（本地开发）。
+	rec := httptest.NewRecorder()
+	csrf.New(csrf.Config{}).Issue(rec)
+	if !rec.Result().Cookies()[0].Secure {
+		t.Fatal("csrf cookie must be Secure by default")
+	}
+	rec = httptest.NewRecorder()
+	csrf.New(csrf.Config{InsecureCookie: true}).Issue(rec)
+	if rec.Result().Cookies()[0].Secure {
+		t.Fatal("InsecureCookie opt-out must drop Secure")
+	}
+}
