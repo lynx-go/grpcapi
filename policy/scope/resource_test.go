@@ -63,15 +63,20 @@ func TestResourceKindValidate(t *testing.T) {
 		{Kind: "resource"},
 		{Kind: "resource", Values: []string{"databases", "notes"}},
 		{Kind: "resource", Values: []string{"*"}},
-		{Kind: "resource", Values: []string{"databases:read"}},
+		// 声明值携带非 op 后缀 = 实例寻址，属 principal 授权面，不属声明面。
+		{Kind: "resource", Values: []string{"databases:blog"}},
+		{Kind: "resource", Values: []string{"databases:"}},
+		{Kind: "resource", Values: []string{"databases:create"}},
 	}
 	for _, req := range bad {
 		if err := k.Validate(req, vocab); err == nil {
 			t.Errorf("Validate(%+v) should fail", req)
 		}
 	}
-	if err := k.Validate(policy.Requirement{Kind: "resource", Values: []string{"databases"}}, vocab); err != nil {
-		t.Fatalf("valid requirement rejected: %v", err)
+	for _, value := range []string{"databases", "databases:read", "databases:write", "databases:admin"} {
+		if err := k.Validate(policy.Requirement{Kind: "resource", Values: []string{value}}, vocab); err != nil {
+			t.Fatalf("valid requirement %q rejected: %v", value, err)
+		}
 	}
 }
 
@@ -107,6 +112,72 @@ func TestResourceKindEvaluate(t *testing.T) {
 	pOp := &principal.Principal{Claims: map[string][]string{"scopes": {"notes:read"}}}
 	if ok, _ := eval(pOp, request); ok {
 		t.Fatal("op-level grant must not satisfy instance gate")
+	}
+	// 无方向声明（"notes"）：实例+方向单 token 不剥后缀，不授予（兼容不变量）。
+	pBlogRead := &principal.Principal{Claims: map[string][]string{"scopes": {"notes:blog.read"}}}
+	if ok, _ := eval(pBlogRead, request); ok {
+		t.Fatal("op-less gate must not strip instance op suffix")
+	}
+}
+
+// TestResourceKindEvaluateOpAware：方向感知实例门（声明值 "notes:read"）——
+// torchwood T-02「单 token = 方向 + 实例」合取语义（G-1 修复）。
+func TestResourceKindEvaluateOpAware(t *testing.T) {
+	k := resourceKind(t)
+	req := policy.Requirement{Kind: "resource", Values: []string{"notes:read"}}
+	request := &echov1.HearRequest{Filter: "blog"}
+
+	eval := func(scopes ...string) (bool, error) {
+		p := &principal.Principal{Claims: map[string][]string{"scopes": scopes}}
+		return k.Evaluate(context.Background(), policy.EvalContext{Principal: p, Request: request}, req)
+	}
+
+	cases := []struct {
+		name   string
+		scopes []string
+		want   bool
+	}{
+		{"实例+方向单 token,方向一致", []string{"notes:blog.read"}, true},
+		{"实例+方向单 token,方向不一致", []string{"notes:blog.write"}, false},
+		{"无后缀实例 token = 全方向", []string{"notes:blog"}, true},
+		{"实例+方向 token,其他实例", []string{"notes:wiki.read"}, false},
+		{"操作级 token 不授予实例", []string{"notes:read"}, false},
+		{"资源整体授权", []string{"notes"}, true},
+		{"通配符", []string{"*"}, true},
+	}
+	for _, tc := range cases {
+		if got, err := eval(tc.scopes...); got != tc.want || err != nil {
+			t.Errorf("%s: got %v, %v; want %v, nil", tc.name, got, err, tc.want)
+		}
+	}
+}
+
+// TestGrantsInstanceFor：方向感知实例判定的纯函数面。每个用例独立 scope
+// 集，避免多 token 叠加干扰；instWant 是 GrantsInstance（op="" 委托路径）
+// 的期望——兼容不变量：op 为空不剥实例段方向后缀。
+func TestGrantsInstanceFor(t *testing.T) {
+	cases := []struct {
+		name                 string
+		set                  scope.Set
+		resource, target, op string
+		forWant, instWant    bool
+	}{
+		{"实例+方向单 token,方向一致", scope.Set{"notes:blog.read"}, "notes", "blog", "read", true, false},
+		{"实例+方向单 token,方向不一致", scope.Set{"notes:blog.read"}, "notes", "blog", "write", false, false},
+		{"实例+方向单 token,其他实例", scope.Set{"notes:blog.read"}, "notes", "wiki", "read", false, false},
+		{"无后缀实例 token = 全方向", scope.Set{"notes:blog"}, "notes", "blog", "write", true, true},
+		{"操作级 token 不授予实例", scope.Set{"notes:read"}, "notes", "read", "read", false, false},
+		{"资源整体授权覆盖任意方向", scope.Set{"databases"}, "databases", "any", "write", true, true},
+		{"显式实例通配", scope.Set{"cache:*"}, "cache", "anything", "read", true, true},
+		{"全局通配", scope.Set{"*"}, "any", "x", "write", true, true},
+	}
+	for _, tc := range cases {
+		if got := scope.GrantsInstanceFor(tc.set, tc.resource, tc.target, tc.op, true); got != tc.forWant {
+			t.Errorf("%s: GrantsInstanceFor(%s,%s,%s) = %v, want %v", tc.name, tc.resource, tc.target, tc.op, got, tc.forWant)
+		}
+		if got := scope.GrantsInstance(tc.set, tc.resource, tc.target, true); got != tc.instWant {
+			t.Errorf("%s: GrantsInstance(%s,%s) = %v, want %v（op 为空不剥实例段后缀）", tc.name, tc.resource, tc.target, got, tc.instWant)
+		}
 	}
 }
 

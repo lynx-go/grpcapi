@@ -6,16 +6,25 @@
 // ResourceKind 做实例级（请求寻址的目标实例是否被授权）。两个 kind 可同链
 // 注册叠加使用——操作门 + 实例门是 torchwood SERVER 档的完整语义。
 //
+// Requirement 值两种形态：
+//
+//	values: ["databases"]        实例门（任意方向）
+//	values: ["databases:read"]   方向感知实例门：带方向后缀的实例 token
+//	                             （databases:blog.read）仅在方向一致时放行
+//
 // scope token 语义（本 kind 视角）：
 //
-//	databases        资源整体授权，寻址任意实例放行
-//	databases:*      同上（显式通配）
-//	databases:blog   授予实例 blog
-//	databases:read   操作级 token，不授予实例寻址（操作级由 scope.Kind 判定）
-//	*                全局通配（可用 DisallowWildcard 关闭）
+//	databases           资源整体授权，寻址任意实例放行（任意方向）
+//	databases:*         同上（显式通配）
+//	databases:blog      授予实例 blog（任意方向）
+//	databases:blog.read 授予实例 blog 的 read 方向（仅方向感知门放行；
+//	                     无方向门（"databases" 声明）不剥后缀，不授予）
+//	databases:read      操作级 token，不授予实例寻址（操作级由 scope.Kind 判定）
+//	*                   全局通配（可用 DisallowWildcard 关闭）
 //
 // 实例 ID 与已知 op（read/write/admin）同名时按 op 解释；实例命名是域内
-// 约定，不要用这三个词做 ID。
+// 约定，不要用这三个词做 ID。实例段允许携带 "." 后缀方向（cutLast 语义）；
+// 后缀不是已知 op 的 "." 一律视作实例 ID 的一部分（dotted id）。
 package scope
 
 import (
@@ -62,8 +71,9 @@ func (o ResourceOptions) domain() string {
 // ResourceKind 构造名为 "resource" 的 RequirementKind。
 //
 // Requirement 形态：{kind: "resource", values: ["databases"]}——values 必须
-// 恰有一个资源名（一个方法寻址一种资源）。ID 为 nil 返回错误：缺提取器
-// 的实例门没有求值语义。
+// 恰有一个声明值："<resource>"（实例门，任意方向）或 "<resource>:<op>"
+//（方向感知实例门，op ∈ read/write/admin；一个方法寻址一种资源）。
+// ID 为 nil 返回错误：缺提取器的实例门没有求值语义。
 func ResourceKind(opts ResourceOptions) (policy.RequirementKind, error) {
 	if opts.ID == nil {
 		return policy.RequirementKind{}, fmt.Errorf("scope: ResourceOptions.ID is required (see FieldID/QueryID/PathID)")
@@ -76,12 +86,15 @@ func ResourceKind(opts ResourceOptions) (policy.RequirementKind, error) {
 			if len(req.Values) != 1 {
 				return fmt.Errorf("resource requires exactly one value (the addressed resource), got %d", len(req.Values))
 			}
-			name := req.Values[0]
-			if name == "" || name == "*" || name == "all" {
-				return fmt.Errorf("resource value %q is not a concrete resource name", name)
+			resource, _, err := ParseResourceValue(req.Values[0])
+			if err != nil {
+				return err
 			}
-			if strings.ContainsAny(name, ": ") {
-				return fmt.Errorf("resource name %q must not contain ':' or spaces", name)
+			if resource == "" || resource == "*" || resource == "all" {
+				return fmt.Errorf("resource value %q is not a concrete resource name", req.Values[0])
+			}
+			if strings.ContainsAny(resource, ": ") {
+				return fmt.Errorf("resource name %q must not contain ':' or spaces", resource)
 			}
 			domain := req.Vocabulary
 			if domain == "" {
@@ -90,14 +103,19 @@ func ResourceKind(opts ResourceOptions) (policy.RequirementKind, error) {
 			if opts.RequireVocabulary && !vocab.Has(domain) {
 				return fmt.Errorf("resource requires vocabulary domain %q, but it is not registered", domain)
 			}
-			if vocab.Has(domain) && !vocab.Contains(domain, name) {
-				return fmt.Errorf("resource %q is not in vocabulary domain %q", name, domain)
+			if vocab.Has(domain) && !vocab.Contains(domain, resource) {
+				return fmt.Errorf("resource %q is not in vocabulary domain %q", resource, domain)
 			}
 			return nil
 		},
 		Evaluate: func(_ context.Context, ec policy.EvalContext, req policy.Requirement) (bool, error) {
 			if ec.Principal == nil {
 				return false, nil
+			}
+			resource, op, err := ParseResourceValue(req.Values[0])
+			if err != nil {
+				// 求值期再守一道（自定义构造的 Set 不经 Build 校验）。
+				return false, err
 			}
 			target, err := opts.ID(ec.Request)
 			if err != nil {
@@ -109,14 +127,42 @@ func ResourceKind(opts ResourceOptions) (policy.RequirementKind, error) {
 				return false, fmt.Errorf("resource: request carries no target id for %q", req.Values[0])
 			}
 			set := Set(ec.Principal.Claim(opts.claim()))
-			return GrantsInstance(set, req.Values[0], target, !opts.DisallowWildcard), nil
+			return GrantsInstanceFor(set, resource, target, op, !opts.DisallowWildcard), nil
 		},
 	}, nil
+}
+
+// ParseResourceValue 解析声明值 "<resource>" 或 "<resource>:<op>"；op 只能
+// 是 read/write/admin（空 = 不校验方向）。声明值携带非 op 后缀（如
+// "databases:blog"）报错——实例寻址属 principal 授权面，不属声明面。
+func ParseResourceValue(value string) (resource, op string, err error) {
+	res, op, has := cutLast(value, ":")
+	if !has {
+		return value, "", nil
+	}
+	if res == "" || !isOp(op) {
+		return "", "", fmt.Errorf("resource value %q must be <resource> or <resource>:<op> (read/write/admin)", value)
+	}
+	return res, op, nil
 }
 
 // GrantsInstance 报告 scope 集合是否授权寻址 resource 的 target 实例。
 // 导出供项目自定义 Decider 复用同一语义。
 func GrantsInstance(set Set, resource, target string, allowWildcard bool) bool {
+	return GrantsInstanceFor(set, resource, target, "", allowWildcard)
+}
+
+// GrantsInstanceFor 报告 scope 集合是否授权以 op 方向寻址 resource 的
+// target 实例（torchwood T-02「单 token = 方向 + 实例」合取语义）：
+//   - 资源整体授权（databases）与无后缀实例 token（databases:blog）对
+//     任意方向放行；
+//   - 带方向后缀的实例 token（databases:blog.read）仅在实例命中且方向与
+//     op 一致时放行；
+//   - 操作级 token（databases:read）不授予实例寻址（操作级由 scope.Kind
+//     判定）；
+//   - op 为空等价 GrantsInstance（不剥实例段方向后缀——向后兼容不变量）。
+// 导出供项目自定义 Decider 复用同一语义。
+func GrantsInstanceFor(set Set, resource, target, op string, allowWildcard bool) bool {
 	for _, token := range set {
 		if token == "*" || token == "all" {
 			if allowWildcard {
@@ -137,7 +183,18 @@ func GrantsInstance(set Set, resource, target string, allowWildcard bool) bool {
 		case isOp(seg):
 			// 操作级 token（read/write/admin），不授予实例寻址。
 			continue
-		case seg == target:
+		}
+		if op != "" {
+			// 方向感知：剥实例段的方向后缀，方向须与 op 一致。
+			if inst, suffix, ok := cutLast(seg, "."); ok && isOp(suffix) {
+				if inst == target && suffix == op {
+					return true
+				}
+				continue
+			}
+		}
+		if seg == target {
+			// 无方向后缀的实例 token = 全方向。
 			return true
 		}
 	}

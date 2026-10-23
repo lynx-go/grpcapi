@@ -102,6 +102,12 @@ func (i *Interceptor) Unary() grpc.UnaryServerInterceptor {
 }
 
 // Stream 返回 stream 授权拦截器。
+//
+// 注意：open-time 授权（StreamAuthOpen，默认）在流建立时求值，不携带请求
+// 消息（Request=nil）——依赖请求寻址的谓词（如 policy/scope 的 resource
+// 实例门）在 open-time 恒无目标可用，实例 token 主体会被拒绝。此类方法
+// 应改用 StreamAuthPerMessage（首条消息起逐条再授权），或要求资源整体/
+// 通配授权。
 func (i *Interceptor) Stream() grpc.StreamServerInterceptor {
 	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
 		op, ok := i.set.Get(info.FullMethod)

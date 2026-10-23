@@ -6,6 +6,21 @@
 
 ## [Unreleased]（将发布为 v0.3.0）
 
+### 执行侧迁移补课（torchwood §11.4 迁移实测反馈）
+
+- **resource 实例门方向感知（G-1 修复）**：Requirement 声明值扩展
+  `<resource>:<op>` 形态（如 `databases:read`）；新增
+  `scope.GrantsInstanceFor(set, resource, target, op, allowWildcard)`——
+  带方向后缀的实例 token（`databases:blog.read`）仅在实例命中且方向一致
+  时授予，无后缀实例 token 视为全方向。`GrantsInstance` 行为不变（op 为空
+  不剥实例段后缀，兼容不变量）。声明值携带非 op 后缀（`databases:blog`）
+  仍构建失败——实例寻址属 principal 授权面。torchwood T-02「单 token =
+  方向 + 实例」合取语义由此可全量表达（组间 OR 组合范式见
+  `authz/composite_gate_test.go`）。
+- **Stream open-time 授权文档化（G-2）**：open-time 求值不携带请求消息，
+  依赖请求寻址的谓词（resource 实例门）恒无目标——此类方法应使用
+  StreamAuthPerMessage 或要求资源整体/通配授权（拦截器文档已注明）。
+
 ### 面向真实消费者的补课（torchwood/fleetly 双项目审核结论）
 
 - **CORS**：新增 `cors` 包（`server.Config.CORS` 全局挂载或

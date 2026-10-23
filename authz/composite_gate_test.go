@@ -173,3 +173,97 @@ func TestServerTierPolicyFormatStable(t *testing.T) {
 		t.Fatalf("Format =\n  %s\nwant\n  %s", got, want)
 	}
 }
+
+// TestServerTierOrCompositionWithOpAwareResource 是 torchwood 执行侧迁移
+// 采用的组合形态（G-1 修复后的完备形态）：组间 OR + 方向感知实例门——
+// 单个操作级 token（databases.read）过 scope 门、单个实例+方向 token
+// （databases:db1.read）过 resource 门、无后缀实例 token（databases:db1）
+// 过任一门，`*`/裸资源两者皆过。与 torchwood 旧逐 token 合取语义逐类
+// 等价（见 torchwood docs/developer/21 §4 D-1/D-2）。
+func TestServerTierOrCompositionWithOpAwareResource(t *testing.T) {
+	resourceKind, err := scope.ResourceKind(scope.ResourceOptions{
+		ID:                scope.FieldID("filter"),
+		RequireVocabulary: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg, err := policy.NewRegistry(
+		policy.KindAuthenticated(),
+		policy.KindClaim(),
+		policy.KindPrincipal(),
+		policy.ClaimKind("admin_role", "admin_roles", policy.MatchAny),
+		scope.Kind(scope.Options{RequireVocabulary: true}),
+		resourceKind,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readTree := policy.Policy{AnyOf: [][]policy.Requirement{
+		{{Kind: "principal_kind", Values: []string{"admin"}}},
+		{{Kind: "scope", Values: []string{"databases:read"}}},
+		// 方向感知实例门：声明值携带方向，实例 token 的方向后缀须一致。
+		{{Kind: "resource", Values: []string{"databases:read"}}},
+	}}
+	writeTree := readTree.Clone()
+	writeTree.AnyOf[1][0].Values = []string{"databases:write"}
+	writeTree.AnyOf[2][0].Values = []string{"databases:write"}
+	set, err := policy.NewSetWithVocabulary(reg, policy.NewVocabulary(map[string][]string{
+		"scope":    {"databases"},
+		"resource": {"databases"},
+	}),
+		policy.Operation{ID: "/svc/Databases/Get", Kind: policy.KindGRPC, Policy: readTree},
+		policy.Operation{ID: "/svc/Databases/Put", Kind: policy.KindGRPC, Policy: writeTree},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	interceptor, err := authz.NewInterceptor(set, nil, authz.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	call := func(method, target string, scopes ...string) error {
+		ctx := context.Background()
+		if scopes != nil {
+			ctx = principal.With(ctx, &principal.Principal{
+				Kind:   "api_key",
+				Claims: map[string][]string{"scopes": scopes},
+			})
+		}
+		_, err := interceptor.Unary()(ctx, &echov1.HearRequest{Filter: target},
+			&grpc.UnaryServerInfo{FullMethod: method}, func(context.Context, any) (any, error) { return nil, nil })
+		return err
+	}
+	allow := func(err error) bool { return err == nil }
+
+	// 操作级 token 单独持有即可调读/写面（torchwood 最常用形态行为不变）。
+	if !allow(call("/svc/Databases/Get", "db1", "databases:read")) {
+		t.Fatal("op-level token alone should pass read via scope gate")
+	}
+	if allow(call("/svc/Databases/Put", "db1", "databases:read")) {
+		t.Fatal("op-level read token must not pass write")
+	}
+	// 实例+方向单 token（G-1 修复）：读 token 过读面的方向感知实例门。
+	if !allow(call("/svc/Databases/Get", "db1", "databases:db1.read")) {
+		t.Fatal("instance+op single token should pass matching direction")
+	}
+	if allow(call("/svc/Databases/Put", "db1", "databases:db1.read")) {
+		t.Fatal("instance+read token must not pass write method")
+	}
+	if allow(call("/svc/Databases/Get", "db2", "databases:db1.read")) {
+		t.Fatal("instance token must not address other instances")
+	}
+	// 无后缀实例 token = 全方向。
+	if !allow(call("/svc/Databases/Put", "db1", "databases:db1")) {
+		t.Fatal("suffix-less instance token grants all directions")
+	}
+	// 裸资源/通配符过两门。
+	if !allow(call("/svc/Databases/Put", "any", "databases")) || !allow(call("/svc/Databases/Get", "any", "*")) {
+		t.Fatal("resource-wide / wildcard should pass both gates")
+	}
+	// 匿名仍 Unauthenticated。
+	if code := status.Code(call("/svc/Databases/Get", "db1")); code != codes.Unauthenticated {
+		t.Fatalf("anonymous code = %v, want Unauthenticated", code)
+	}
+}
