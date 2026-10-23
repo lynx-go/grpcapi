@@ -98,3 +98,12 @@ func TestCloneIsDeep(t *testing.T) {
 		t.Fatal("nil receiver predicates should be false")
 	}
 }
+
+func TestMustFromPanicsWithoutPrincipal(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("MustFrom without principal must panic (Go Must convention)")
+		}
+	}()
+	_ = principal.MustFrom(context.Background())
+}

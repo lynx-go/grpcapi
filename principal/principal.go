@@ -46,9 +46,14 @@ func From(ctx context.Context) (*Principal, bool) {
 	return p, ok
 }
 
-// MustFrom 取出 Principal；不存在时返回 nil。调用方必须显式判空。
+// MustFrom 取出 Principal；缺失时 panic。Must 前缀遵循 Go 惯例：仅用于
+// 不变量已由上游保证的路径（如 authn 拦截器之后的 handler/中间件）；
+// 可能缺失时用 From 拿 ok 语义。
 func MustFrom(ctx context.Context) *Principal {
-	p, _ := From(ctx)
+	p, ok := From(ctx)
+	if !ok {
+		panic("principal: MustFrom called on a context without a Principal")
+	}
 	return p
 }
 

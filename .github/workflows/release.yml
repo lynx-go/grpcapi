@@ -1,0 +1,42 @@
+name: release
+# 打主仓 tag（v*）触发：全量验证 + genproto tag 同步检查 + GitHub Release。
+#
+# 发版纪律（README「版本」）：genproto 是独立 Go module，必须先打
+# `genproto/<ver>` tag、再抬主仓 require、最后打主仓 `v<ver>`——下面的
+# genproto-sync 步骤把这条人肉纪律变成机器检查。
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: genproto tag sync
+        run: |
+          want=$(grep -E '^\s+github.com/lynx-go/grpcapi/genproto v' go.mod | awk '{print $2}')
+          echo "go.mod requires genproto ${want}"
+          if ! git rev-parse -q --verify "refs/tags/genproto/${want}" >/dev/null; then
+            echo "::error::tag genproto/${want} 不存在：先给 genproto 打 tag，再抬主仓 require（README 版本章节）"
+            exit 1
+          fi
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test -race ./...
+      - name: create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes \
+            --verify-tag

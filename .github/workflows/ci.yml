@@ -44,9 +44,10 @@ jobs:
           # 生成物入库（DESIGN.md §3 单点生成），同步断言需要完整树。
           fetch-depth: 0
       # buf remote 插件（protocolbuffers/go、grpc/go）公开可匿名执行；
-      # 若组织策略要求认证，在仓库 secret 配 BUF_TOKEN 并启用下行注释：
-      # - uses: bufbuild/buf-setup-action@v1
+      # 版本与 mise.toml 对齐（buf 1.65.0），消除 CI 工具漂移。
       - uses: bufbuild/buf-setup-action@v1
+        with:
+          version: 1.65.0
       # workspace lint + 生成 + 入库生成物零漂移（proto↔genproto 同步断言，
       # DESIGN.md §8：proto 源与 genproto 必须同 PR）。
       # 本地插件需先构建（example/echo 的 *_grpcapi.pb.go 经它生成）。
