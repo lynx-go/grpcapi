@@ -72,7 +72,7 @@ func (o ResourceOptions) domain() string {
 //
 // Requirement 形态：{kind: "resource", values: ["databases"]}——values 必须
 // 恰有一个声明值："<resource>"（实例门，任意方向）或 "<resource>:<op>"
-//（方向感知实例门，op ∈ read/write/admin；一个方法寻址一种资源）。
+// （方向感知实例门，op ∈ read/write/admin；一个方法寻址一种资源）。
 // ID 为 nil 返回错误：缺提取器的实例门没有求值语义。
 func ResourceKind(opts ResourceOptions) (policy.RequirementKind, error) {
 	if opts.ID == nil {
@@ -161,6 +161,7 @@ func GrantsInstance(set Set, resource, target string, allowWildcard bool) bool {
 //   - 操作级 token（databases:read）不授予实例寻址（操作级由 scope.Kind
 //     判定）；
 //   - op 为空等价 GrantsInstance（不剥实例段方向后缀——向后兼容不变量）。
+//
 // 导出供项目自定义 Decider 复用同一语义。
 func GrantsInstanceFor(set Set, resource, target, op string, allowWildcard bool) bool {
 	for _, token := range set {
