@@ -39,6 +39,12 @@ const (
 type Options struct {
 	MultipleCredentialPolicy MultipleCredentialPolicy
 	InvalidCredentialPolicy  InvalidCredentialPolicy
+	// InvalidCredentialByKind 按凭证族覆盖无效凭证策略（如 public 面上
+	// 无效 Bearer/cookie 降级匿名、无效 API key 恒 401 防暴测）。缺省项
+	// 回落到 InvalidCredentialPolicy。多凭证同时出现时按 fail-closed
+	// 合并：任一在场凭证族解析为 Reject 即拒绝，全部为 IgnoreOnAnonymous
+	// 且方法为 public 才降级匿名。
+	InvalidCredentialByKind map[CredentialKind]InvalidCredentialPolicy
 	// IsAnonymous 用于 IgnoreOnAnonymous；nil = 一律不忽略。
 	IsAnonymous func(fullMethod string) bool
 	Extractor   Extractor
@@ -154,7 +160,7 @@ func (i *Interceptor) authenticate(ctx context.Context, fullMethod string, anony
 	}
 	// 同一凭证族出现多个值（尤其多个 Authorization）一律拒绝，避免代理
 	// 叠加/注入时由“取第一个”静默选出攻击者可控的凭证。
-	if len(creds.Bearer) > 1 || len(creds.APIKeys) > 1 {
+	if len(creds.Bearer) > 1 || len(creds.APIKeys) > 1 || len(creds.Tickets) > 1 {
 		err := status.Error(codes.Unauthenticated, "multiple credentials of the same type are not allowed")
 		i.fail(ctx, err)
 		return nil, err
@@ -166,7 +172,7 @@ func (i *Interceptor) authenticate(ctx context.Context, fullMethod string, anony
 	}
 	p, err := i.chain.Authenticate(ctx, creds)
 	if err != nil {
-		if i.ignoreInvalid(anonymous, err) {
+		if i.ignoreInvalid(creds, anonymous, err) {
 			return nil, nil
 		}
 		i.fail(ctx, err)
@@ -189,11 +195,29 @@ func (i *Interceptor) authenticate(ctx context.Context, fullMethod string, anony
 	return p, nil
 }
 
-func (i *Interceptor) ignoreInvalid(anonymous bool, err error) bool {
-	if i.opts.InvalidCredentialPolicy != InvalidCredentialIgnoreOnAnonymous {
+func (i *Interceptor) ignoreInvalid(creds Credentials, anonymous bool, err error) bool {
+	if status.Code(err) != codes.Unauthenticated {
 		return false
 	}
-	return anonymous && status.Code(err) == codes.Unauthenticated
+	kinds := creds.PresentedKinds()
+	if len(kinds) == 0 {
+		return false
+	}
+	// fail-closed 合并：任一在场凭证族解析为 Reject 即拒绝；全部为
+	// IgnoreOnAnonymous 且方法为 public 才降级匿名。
+	for _, kind := range kinds {
+		if i.kindPolicy(kind) != InvalidCredentialIgnoreOnAnonymous {
+			return false
+		}
+	}
+	return anonymous
+}
+
+func (i *Interceptor) kindPolicy(kind CredentialKind) InvalidCredentialPolicy {
+	if p, ok := i.opts.InvalidCredentialByKind[kind]; ok {
+		return p
+	}
+	return i.opts.InvalidCredentialPolicy
 }
 
 func (i *Interceptor) isAnonymous(fullMethod string) bool {

@@ -7,6 +7,7 @@ toolchain go1.26.10
 require (
 	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.12-20260825204119-511051f7f437.1
 	buf.build/go/protovalidate v1.4.0
+	github.com/coder/websocket v1.8.15
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0
 	github.com/lynx-go/grpcapi/genproto v0.2.0

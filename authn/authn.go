@@ -24,13 +24,29 @@ type Credentials struct {
 	Bearer     []string
 	APIKeys    []string
 	Cookies    []string
-	TLS        *tls.ConnectionState
-	HTTP       *http.Request
+	// Tickets 是短时单用途票据（EventSource/浏览器 WebSocket 无法带自定义
+	// header 的场景，经 URL query 传递）。HTTP 侧需显式组合 WithQueryTicket
+	// 提取；gRPC 侧从 x-ticket metadata 提取（gateway 项目可经 MuxOptions.
+	// Metadata 把 query 参数转发为该键）。
+	Tickets []string
+	TLS     *tls.ConnectionState
+	HTTP    *http.Request
 }
+
+// CredentialKind 是凭证族标识，用于按凭证类型配置策略。
+type CredentialKind string
+
+const (
+	KindBearer     CredentialKind = "bearer"
+	KindAPIKey     CredentialKind = "api_key"
+	KindCookie     CredentialKind = "cookie"
+	KindClientCert CredentialKind = "client_cert"
+	KindTicket     CredentialKind = "ticket"
+)
 
 // Empty 报告是否没有任何待认证凭证。
 func (c Credentials) Empty() bool {
-	return len(c.Bearer) == 0 && len(c.APIKeys) == 0 && len(c.Cookies) == 0 && !c.HasClientCert()
+	return len(c.Bearer) == 0 && len(c.APIKeys) == 0 && len(c.Cookies) == 0 && len(c.Tickets) == 0 && !c.HasClientCert()
 }
 
 // HasClientCert 报告是否带 mTLS 客户端证书。
@@ -54,6 +70,35 @@ func (c Credentials) APIKey() string {
 	return c.APIKeys[0]
 }
 
+// Ticket 返回第一个票据。
+func (c Credentials) Ticket() string {
+	if len(c.Tickets) == 0 {
+		return ""
+	}
+	return c.Tickets[0]
+}
+
+// PresentedKinds 返回请求携带的凭证族（多凭证时按固定顺序）。
+func (c Credentials) PresentedKinds() []CredentialKind {
+	var out []CredentialKind
+	if len(c.Bearer) > 0 {
+		out = append(out, KindBearer)
+	}
+	if len(c.APIKeys) > 0 {
+		out = append(out, KindAPIKey)
+	}
+	if len(c.Cookies) > 0 {
+		out = append(out, KindCookie)
+	}
+	if len(c.Tickets) > 0 {
+		out = append(out, KindTicket)
+	}
+	if c.HasClientCert() {
+		out = append(out, KindClientCert)
+	}
+	return out
+}
+
 // Cookie 返回指定 cookie 值；多个 Cookie 头会被解析。
 func (c Credentials) Cookie(name string) string {
 	for _, raw := range c.Cookies {
@@ -67,7 +112,7 @@ func (c Credentials) Cookie(name string) string {
 	return ""
 }
 
-// AuthKinds 返回出现的凭证种类数（Bearer/API key/Cookie/mTLS）。
+// AuthKinds 返回出现的凭证种类数（Bearer/API key/Cookie/票据/mTLS）。
 func (c Credentials) AuthKinds() int {
 	n := 0
 	if len(c.Bearer) > 0 {
@@ -77,6 +122,9 @@ func (c Credentials) AuthKinds() int {
 		n++
 	}
 	if len(c.Cookies) > 0 {
+		n++
+	}
+	if len(c.Tickets) > 0 {
 		n++
 	}
 	if c.HasClientCert() {
@@ -144,6 +192,7 @@ func (defaultExtractor) Extract(_ context.Context, fullMethod string, md metadat
 	}
 	c.APIKeys = append(c.APIKeys, md.Get("x-api-key")...)
 	c.Cookies = append(c.Cookies, md.Get("cookie")...)
+	c.Tickets = append(c.Tickets, md.Get("x-ticket")...)
 	if p != nil && p.AuthInfo != nil {
 		switch info := p.AuthInfo.(type) {
 		case credentials.TLSInfo:
@@ -193,4 +242,45 @@ func bearerToken(header string) (string, bool) {
 		return "", false
 	}
 	return token, true
+}
+
+// WithQueryTicket 组合一个从 URL query 参数提取短时票据的 HTTP 提取器。
+//
+// 默认提取器不从 query 取凭证——query 会进代理/访问日志，泄露面远大于
+// header；只有浏览器技术限制（EventSource/WebSocket 无法带自定义 header）
+// 才值得付出这个代价，因此必须显式开启。约定：
+//
+//   - 票据必须短 TTL + 单用途（兑换即作废），由 Store 侧保证；
+//   - param 为空时用 "ticket"；重复出现同名参数视为多个凭证，按多凭证
+//     规则被拒绝；
+//   - proto 路由（经 gateway 转发 gRPC）需要票据时，项目用 MuxOptions.
+//     Metadata 把 query 参数转发为 "x-ticket" metadata，gRPC 侧默认提取器
+//     即可读出。
+func WithQueryTicket(param string, next HTTPExtractor) HTTPExtractor {
+	if param == "" {
+		param = "ticket"
+	}
+	if next == nil {
+		next = DefaultHTTPExtractor()
+	}
+	return queryTicketExtractor{param: param, next: next}
+}
+
+type queryTicketExtractor struct {
+	param string
+	next  HTTPExtractor
+}
+
+func (e queryTicketExtractor) ExtractHTTP(ctx context.Context, fullMethod string, r *http.Request) (Credentials, error) {
+	c, err := e.next.ExtractHTTP(ctx, fullMethod, r)
+	if err != nil {
+		return c, err
+	}
+	// 只在 URL query 上取，不碰 body；空值不算凭证。
+	for _, v := range r.URL.Query()[e.param] {
+		if v != "" {
+			c.Tickets = append(c.Tickets, v)
+		}
+	}
+	return c, nil
 }

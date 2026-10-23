@@ -100,31 +100,35 @@ func (o ErrorOptions) errorID() string {
 //   - body 为普通 map（非 proto），字段：code/message/error_id。
 func DefaultErrorEncoder(opts ErrorOptions) ErrorEncoder {
 	return ErrorEncoderFunc(func(ctx context.Context, err error) ErrorResponse {
-		st, ok := status.FromError(err)
-		if !ok || st == nil {
-			st = status.New(codes.Internal, "internal server error")
-			opts.logger().ErrorContext(ctx, "http error: non-status error", "error", err)
-		}
-		httpStatus := opts.codeToHTTP(st.Code())
-		message := st.Message()
-		errorID := opts.errorID()
-		if opts.sanitize(st.Code()) {
-			opts.logger().ErrorContext(ctx, "http response: sanitized",
-				"code", st.Code().String(), "original_message", st.Message(), "error_id", errorID)
-			message = "internal server error"
-		}
-		headers := make(http.Header)
-		if httpStatus == http.StatusTooManyRequests && !opts.DisableRetryAfter {
-			if retryAfter, ok := retryAfterSeconds(st); ok {
-				headers.Set("Retry-After", retryAfter)
-			}
-		}
-		return ErrorResponse{
-			Status:  httpStatus,
-			Body:    map[string]any{"code": opts.codeString(st.Code()), "message": message, "error_id": errorID},
-			Headers: headers,
-		}
+		return encodeError(ctx, err, opts, func(code codes.Code, message, errorID string) any {
+			return map[string]any{"code": opts.codeString(code), "message": message, "error_id": errorID}
+		})
 	})
+}
+
+// encodeError 是错误编码的共用内核：状态归一、脱敏、Retry-After 头；错误体
+// 形状由 buildBody 决定（DefaultErrorEncoder 的 map 或兼容垫片的 proto）。
+func encodeError(ctx context.Context, err error, opts ErrorOptions, buildBody func(code codes.Code, message, errorID string) any) ErrorResponse {
+	st, ok := status.FromError(err)
+	if !ok || st == nil {
+		st = status.New(codes.Internal, "internal server error")
+		opts.logger().ErrorContext(ctx, "http error: non-status error", "error", err)
+	}
+	httpStatus := opts.codeToHTTP(st.Code())
+	message := st.Message()
+	errorID := opts.errorID()
+	if opts.sanitize(st.Code()) {
+		opts.logger().ErrorContext(ctx, "http response: sanitized",
+			"code", st.Code().String(), "original_message", st.Message(), "error_id", errorID)
+		message = "internal server error"
+	}
+	headers := make(http.Header)
+	if httpStatus == http.StatusTooManyRequests && !opts.DisableRetryAfter {
+		if retryAfter, ok := retryAfterSeconds(st); ok {
+			headers.Set("Retry-After", retryAfter)
+		}
+	}
+	return ErrorResponse{Status: httpStatus, Body: buildBody(st.Code(), message, errorID), Headers: headers}
 }
 
 // NewEncoderErrorHandler 把 ErrorEncoder 适配为 grpc-gateway 错误处理器

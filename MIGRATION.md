@@ -15,9 +15,9 @@
 | `authz.ScopeSet` / `ScopeRule` | `policy/scope` 的 `Set.Satisfies(resource, op)` |
 | `authz.Vocabulary{ScopeResources}` | `policy.Vocabulary{"scope": ...}` |
 | `interceptor.ChainItem{Slot,...}` | `interceptor.Stage{Name,Order,...}` |
-| `gateway.ErrorBodyBuilder` | `gateway.ErrorEncoder` / `DefaultErrorEncoder` |
-| `gateway.NewErrorHandler(b, HTTPOptions)` | `gateway.NewEncoderErrorHandler(e)` |
-| `gateway.IncomingMatcher` / `OutgoingMatcher` | `gateway.IncomingPolicy` / `OutgoingPolicy`（`HeaderPolicy`） |
+| `gateway.ErrorBodyBuilder` | `gateway.ErrorEncoder` / `ErrorEncoderFunc`（旧实现可经 `gateway.BuilderEncoder` 无损适配） |
+| `gateway.NewErrorHandler(b, HTTPOptions)` | `gateway.NewEncoderErrorHandler(builderEncoder(e))`；注：v0.3.0 已把 `NewErrorHandler`/`IncomingMatcher`/`OutgoingMatcher` 恢复为 **Deprecated 垫片**（`gateway/compat.go`，行为与 v0.2.1 等价、内部委托新实现，v1.0 移除）——阶段 1 已迁移的 gateway 代码升级 v0.3.0 后直接可编译，再按上表渐进替换 |
+| `gateway.IncomingMatcher` / `OutgoingMatcher` | `gateway.IncomingPolicy` / `OutgoingPolicy`（`HeaderPolicy`）；同上，垫片已恢复 |
 | `gateway.MuxOptions{ErrorHandler, IncomingExtra, OutgoingDirect, HeaderPolicy}` | `gateway.MuxOptions{ErrorEncoder, Headers HeaderPolicy}` |
 | `guard.SwaggerAccessMatches` | `guard.OpenAPIv2` + `guard.AssertDocuments` / `guard.Run` |
 | `guard.AssertMethodCount`（global registry） | `guard.AssertSurfaceMethodCount` |
@@ -120,6 +120,10 @@ SYSTEM       -> 项目自定义 kind 或 error（v3 默认禁用）
 - `api_key_scope { resource, op }` → `scope` requirement value `resource` 或
   `resource:op`（v3 scope 语言；旧 `resource.op` 也兼容）。
 - `admin_roles` 读 `admin_roles` claim（不是普通 `roles`）。
+- 资源实例寻址（旧 `databases:blog` 语义）用 `policy/scope.ResourceKind`
+  组装 `resource` kind：api key 路径写成组内 AND `[scope(databases:read),
+  resource(databases)]`——admin 角色路径不叠加实例门。完整执行范式与
+  等价性用例见 `authz/composite_gate_test.go`。
 - `hasHTTP` 检查 `annotations.E_Http`；有注解 → PUBLIC/文档面，无注解 → INTERNAL。
   有 `EXPOSURE_HIDDEN` 需求的项目可以在 legacyProvider 里用自己规则覆盖。
 
@@ -263,6 +267,11 @@ guard.Run(t, guard.SuiteConfig{
 
 ## 6. 验收清单
 
+- [ ] **执行侧迁移（v1.0 硬验收，2026-10 裁定）**：legacy 双投影退役，
+      授权执行走库 Decider（范式见 `authz/composite_gate_test.go`：
+      SERVER 档 = `any_of[admin_role ∪ 组内AND(scope, resource)]`）。
+      legacyProvider 产出的要求树须能被 RequirementDecider 直接求值，
+      不再经 params-JSON 编码回解码绕行。
 - [ ] `policy.Build` + `legacyProvider` 产出与 v2 golden 逐方法等价
 - [ ] API key scope 四形态（`*`/`all`/resource/resource.op）行为不变
 - [ ] PERMISSION/permissions、SERVER/admin_roles 行为不变

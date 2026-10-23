@@ -16,6 +16,7 @@ import (
 
 	"github.com/lynx-go/grpcapi/authn"
 	"github.com/lynx-go/grpcapi/authz"
+	"github.com/lynx-go/grpcapi/cors"
 	"github.com/lynx-go/grpcapi/csrf"
 	"github.com/lynx-go/grpcapi/gateway"
 	"github.com/lynx-go/grpcapi/interceptor"
@@ -64,6 +65,13 @@ type Config struct {
 	HTTPWriteTimeout      time.Duration
 	HTTPIdleTimeout       time.Duration
 
+	// HTTPBodyLimitBytes 是 proto 路由(gateway)与全局 HTTP 请求体上限。
+	// 0 = 与 MaxRecvMsgSize 同源（DESIGN §5.16 安全默认：HTTP 侧 protojson
+	// 解码不受 gRPC 消息上限保护）；>0 显式解耦两种语义（如小消息 API +
+	// 大文件上传的混合负载）。逐路由放宽用 ExtraRoute.MaxBodyBytes。
+	// 负值启动失败。
+	HTTPBodyLimitBytes int64
+
 	// NetworkDial 为 true 时 gateway 走 cfg.GRPCAddr；默认 in-process bufconn。
 	NetworkDial bool
 	Dial        gateway.DialConfig
@@ -83,6 +91,10 @@ type Config struct {
 	ExtraRoutes    []ExtraRoute
 	HTTPMiddleware []func(http.Handler) http.Handler
 	CSRF           *csrf.Config
+	// CORS 是全局跨源中间件；nil = 不启用（不放行任何跨源）。按 API 面
+	// 配置时用 APIConfig.Middleware 挂 cors.New。预检请求在 CSRF/body
+	// limit 之外短路。
+	CORS *cors.Config
 
 	DisableHealth bool
 	Readiness     func(ctx context.Context) error
@@ -109,6 +121,7 @@ type Server struct {
 	bufLis         *bufconn.Listener
 	routes         []surface.RouteInfo
 	ops            []policy.Operation
+	serveOnce      sync.Once
 
 	mu       sync.Mutex
 	grpcAddr string
@@ -144,6 +157,9 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 	if cfg.DisableGRPC && cfg.DisableHTTP {
 		return nil, fmt.Errorf("server: DisableGRPC and DisableHTTP cannot both be true")
 	}
+	if cfg.HTTPBodyLimitBytes < 0 {
+		return nil, fmt.Errorf("server: HTTPBodyLimitBytes cannot be negative")
+	}
 	if cfg.NetworkDial && strings.HasSuffix(cfg.GRPCAddr, ":0") {
 		return nil, fmt.Errorf("server: NetworkDial cannot use an ephemeral gRPC port")
 	}
@@ -151,8 +167,8 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 		// gateway 与 gRPC 同机时，回环地址就是可信代理。
 		cfg.TrustedProxies = []string{"127.0.0.1/32", "::1/128"}
 	}
-	if cfg.DisableHTTP && (len(cfg.ExtraRoutes) > 0 || cfg.Docs != nil || len(cfg.APIs) > 0 || len(cfg.HTTPMiddleware) > 0 || cfg.CSRF != nil) {
-		return nil, fmt.Errorf("server: DisableHTTP cannot be combined with extra routes/docs/API configs/HTTP middleware/CSRF")
+	if cfg.DisableHTTP && (len(cfg.ExtraRoutes) > 0 || cfg.Docs != nil || len(cfg.APIs) > 0 || len(cfg.HTTPMiddleware) > 0 || cfg.CSRF != nil || cfg.CORS != nil) {
+		return nil, fmt.Errorf("server: DisableHTTP cannot be combined with extra routes/docs/API configs/HTTP middleware/CSRF/CORS")
 	}
 
 	regs := allRegistrations(cfg)
@@ -348,6 +364,12 @@ func (s *Server) buildHTTP(ctx context.Context, set *policy.Set, surf *surface.S
 	if s.cfg.DisableHTTP {
 		return nil, surf.Routes(), nil
 	}
+	// 全局 HTTP 请求体上限：默认与 MaxRecvMsgSize 同源（DESIGN §5.16），可经
+	// HTTPBodyLimitBytes 显式解耦；extra route 可用 MaxBodyBytes 逐路由放宽。
+	bodyLimit := int64(s.cfg.MaxRecvMsgSize)
+	if s.cfg.HTTPBodyLimitBytes > 0 {
+		bodyLimit = s.cfg.HTTPBodyLimitBytes
+	}
 
 	groups, err := s.buildGroups(surf)
 	if err != nil {
@@ -453,6 +475,9 @@ func (s *Server) buildHTTP(ctx context.Context, set *policy.Set, surf *surface.S
 		for i := len(g.middleware) - 1; i >= 0; i-- {
 			h = g.middleware[i](h)
 		}
+		// proto 路由统一按全局上限限制请求体（本组 middleware 之外、挂载
+		// 之内），不做逐路由豁免；大 body 场景走 extra route。
+		h = withBodyLimit(h, bodyLimit)
 		pattern := g.prefix
 		if pattern == "" {
 			pattern = "/"
@@ -472,7 +497,12 @@ func (s *Server) buildHTTP(ctx context.Context, set *policy.Set, surf *surface.S
 	}
 
 	for i, r := range extra {
+		limit := bodyLimit
+		if r.MaxBodyBytes > 0 {
+			limit = r.MaxBodyBytes
+		}
 		h := r.Handler
+		h = withBodyLimit(h, limit)
 		h = authz.HTTPMiddleware(decider, extraOps[i], authz.HTTPOptions{
 			ResourceResolver: s.cfg.AuthzOptions.ResourceResolver,
 			OnDecision:       s.cfg.AuthzOptions.OnDecision,
@@ -489,7 +519,7 @@ func (s *Server) buildHTTP(ctx context.Context, set *policy.Set, surf *surface.S
 	}
 
 	if s.cfg.Docs != nil {
-		if err := safeHandle(root, "GET /docs/", http.StripPrefix("/docs/", http.FileServer(http.FS(s.cfg.Docs)))); err != nil {
+		if err := safeHandle(root, "GET /docs/", withBodyLimit(http.StripPrefix("/docs/", http.FileServer(http.FS(s.cfg.Docs))), bodyLimit)); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -504,9 +534,14 @@ func (s *Server) buildHTTP(ctx context.Context, set *policy.Set, surf *surface.S
 	if s.cfg.AccessLog {
 		h = accessLog(s.logger, h)
 	}
-	// 请求体上限与 gRPC MaxRecvMsgSize 同源（DESIGN §5.16）：HTTP 侧
-	// protojson 解码不受 gRPC 消息上限保护，超限 body 在读入时即失败。
-	h = withBodyLimit(h, int64(s.cfg.MaxRecvMsgSize))
+	// CORS 放最外层：预检请求不进入 CSRF/业务中间件，也不进 access log。
+	if s.cfg.CORS != nil {
+		mw, err := cors.New(*s.cfg.CORS)
+		if err != nil {
+			return nil, nil, fmt.Errorf("server: %w", err)
+		}
+		h = mw.Handler(h)
+	}
 
 	routes := prefixedRoutes(surf, groups, s.cfg)
 	for i, op := range extraOps {
@@ -913,6 +948,52 @@ func (s *Server) Routes() []surface.RouteInfo {
 	return out
 }
 
+// GRPCServer 返回装配完成的对外 gRPC server（服务注册、拦截器链、health、
+// 反射）。供 lynx 等自有 runner 驱动生命周期：调用方自管 listener 与
+// Serve/GracefulStop；Server.Shutdown 会 GracefulStop 同一实例，两者可混用。
+// DisableGRPC 时返回 nil。
+//
+// 与 Run 的分工：Run 全托管（自带 listener/等待/关停）；GRPCServer + 自管
+// Serve 保住 server.New 的装配与启动断言，把传输层生命周期留给宿主框架
+// （lynxgrpc 自建 grpc.Server，不收预构建实例，因此以裸 server 形态交接）。
+func (s *Server) GRPCServer() *grpc.Server {
+	return s.externalServer
+}
+
+// HTTPHandler 返回装配完成的 HTTP handler（gateway + extra routes + 全局
+// 中间件 + body limit），供 lynxhttp 等自有 HTTP runner 挂载：
+//
+//	srv, _ := server.New(ctx, cfg)
+//	http := lynxhttp.NewServer(srv.HTTPHandler(), lynxhttp.WithAddr(":8080"))
+//
+// 首次调用启动 in-process 内部 gRPC（bufconn）并置 health SERVING；此后
+// Run 不会重复启动。传输层超时（ReadHeaderTimeout 等）在该模式下由调用方
+// 的 http.Server 决定，Config 中对应字段不生效。DisableHTTP 时返回 nil。
+func (s *Server) HTTPHandler() http.Handler {
+	if s.cfg.DisableHTTP {
+		return nil
+	}
+	s.startInternal()
+	return s.handler
+}
+
+// startInternal 启动 in-process 内部 gRPC（非 NetworkDial 且未禁用 HTTP 时）
+// 并置 health SERVING；幂等（Run/HTTPHandler 共用，防双启动）。
+func (s *Server) startInternal() {
+	s.serveOnce.Do(func() {
+		if !s.cfg.NetworkDial && s.bufLis != nil && s.internalServer != nil {
+			go func() {
+				if err := s.internalServer.Serve(s.bufLis); err != nil {
+					s.logger.Warn("server: internal bufconn serve stopped", "error", err)
+				}
+			}()
+		}
+		if s.health != nil {
+			s.health.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
+		}
+	})
+}
+
 func (s *Server) Operations() []policy.Operation {
 	out := make([]policy.Operation, len(s.ops))
 	copy(out, s.ops)
@@ -953,16 +1034,7 @@ func (s *Server) Run(ctx context.Context) error {
 		}()
 	}
 	if !s.cfg.DisableHTTP {
-		if !s.cfg.NetworkDial {
-			if s.bufLis == nil {
-				return fmt.Errorf("server: HTTP enabled but in-process listener missing")
-			}
-			go func() {
-				if err := s.internalServer.Serve(s.bufLis); err != nil {
-					errCh <- err
-				}
-			}()
-		}
+		s.startInternal()
 		addr := s.cfg.HTTPAddr
 		if addr == "" {
 			addr = "127.0.0.1:8080"

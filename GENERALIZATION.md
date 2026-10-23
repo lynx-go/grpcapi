@@ -1870,7 +1870,10 @@ handler := gateway.NewHandler(gateway.HandlerOptions{
 ### 5.19 原生 HTTP 路由：次要逃生口
 
 proto 路由是主模型。health、webhook、OAuth callback、静态文件等无法用
-`google.api.http` 表达的路由，才用 `server.Config.ExtraRoutes` 挂载。
+`google.api.http` 表达的路由，才用 `server.Config.ExtraRoutes` 挂载。SSE /
+WebSocket / 流式上传三个协议桥有 `bridge` 包参考实现，同样以 extra route
+挂载（凭证用 `authn.WithQueryTicket` 票据，body limit 用
+`ExtraRoute.MaxBodyBytes` 逐路由放宽）。
 
 **范围限制（v3.0）**：ExtraRoute 只用于 health/webhook/static/OAuth callback。
 业务 CRUD/查询必须走 proto；否则会出现第二套路由模型，策略、文档、SDK、矩阵
@@ -2033,13 +2036,19 @@ method、path、label、exposure，让「路由到底挂了什么」不再靠猜
 | 凭证提取 | `authn.Extractor` | `DefaultExtractor` | 自定义头/cookie/mTLS 组合 |
 | 认证后增强 | `authn.Enricher` | `authn/admin`（合并 admin 角色） | 租户/组织/风控信息 |
 | CSRF | `csrf` 中间件 | double-submit cookie + SameSite | 项目自定义 token/来源校验 |
+| CORS | `cors` 中间件（`server.Config.CORS`） | fail-closed：未配置即不放行跨源；origin 精确匹配 | 子域通配等进阶形态项目自写 |
+| 短时票据凭证 | `authn.WithQueryTicket` + `authn/ticket` | query 提取（显式开启）+ Store 兑换 | EventSource/浏览器 WS 场景 |
+| 资源实例寻址 | `policy/scope.ResourceKind` | `FieldID/QueryID/PathID` 提取目标实例 | torchwood `databases:blog` 形态 |
+| 流式 HTTP 桥 | `bridge` 包（SSE/上传/WS） | 参考实现：帧化/心跳/错误脱敏/凭证复验 | 业务信封 schema 由项目注入 |
+| 文档标签注入 | `guard.InjectLabels` | Surface label → `x-grpcapi-policy` | 项目自定义 MetadataKey |
 | 流式授权粒度 | `MethodSpec.StreamAuth` | `OPEN`；按方法可设 `PER_MESSAGE` | 逐消息资源映射 |
-| 限流 | `interceptor.RateLimitStage` | 无（槽位，无内置实现） | 内存/Redis/网关限流 |
-| 审计 | `interceptor.AuditStage` | 无（槽位，无内置实现） | 落库/消息队列 |
-| 用量计量 | `interceptor.UsageStage` | 无（槽位，无内置实现） | 计费/配额 |
+| 限流 | `interceptor.RateLimitStage` | `ratelimit` 包（固定窗口内存版，单副本语义） | Redis/网关限流经同一槽位接入 |
+| 审计 | `interceptor.AuditStage` | `audit` 包（slog/Sink，best-effort + Include 噪声治理） | 落库/消息队列经 Sink 接管 |
+| 用量计量 | `interceptor.UsageStage` | `usage` 包（内存计数 + Snapshot） | 持久化/按主体计费自行抓取 |
 | 校验器 | `interceptor.NewValidate()` | protovalidate 内置 | 其他校验库 |
 | 链顺序 | `interceptor.Stage` | 内置顺序常量 | recovery/metrics/custom |
 | proto 路由装配 | `server.Registration` | `server.New` 自动装配 | gRPC 注册 + gateway 注册 + descriptor |
+| 自有 runner 集成 | `Server.GRPCServer()` / `Server.HTTPHandler()` | 裸 server / handler 交接 | lynx 等宿主框架驱动生命周期,保留装配与启动断言 |
 | 多 API / 前缀 | `server.APIConfig` | 单 API 面 | 按前缀/API 面拆 mux |
 | 额外 HTTP 路由 | `server.ExtraRoute` | 无 | health/webhook/static 等逃生口 |
 | HTTP 中间件 | `server.HTTPMiddleware` | 无内置（body limit/CSRF/access log 由 server 自动挂） | 全局/API 面作用域 |
@@ -2330,9 +2339,10 @@ type SDKOptions struct {
    这是长期最干净的方式。
 2. **`SkipMetadata: true`**：只做覆盖/命名/错误体检查，不检查 label。
    适合尚未接入标签注入的项目。
-3. **`guard.InjectLabels`**（设计中的可选便利函数，**未实现**）：在构建期把
-   label 写进生成的 JSON，再由守卫读取。它会修改生成物，需和 `buf generate`
-   一起纳入 CI。当前需要注入的项目走方案 1/2。
+3. **`guard.InjectLabels`**（已实现）：在构建期把 label 写进生成的 JSON，
+   再由守卫读取。它会修改生成物（JSON 键序会重排，比对以 guard 解析结果
+   为准），需和 `buf generate` 一起纳入 CI。已有标签不一致时默认报错
+   （`Overwrite` 覆盖），Surface 外的手写条目默认报错（`SkipUnknown` 跳过）。
 
 不建议让 guard 在测试期动态“修补”文档来通过断言；那会掩盖生成管线漂移。
 
@@ -2642,6 +2652,11 @@ srv, err := server.New(ctx, server.Config{
 - admin 角色来源两者都有：JWT/session claims + admin store，合并到 `admin_roles`；
   不要合并进普通 `roles`。
 - 库不感知旧模型；torchwood 可以先上线，再逐步迁移 proto。
+- **执行侧范式已验证**：SERVER 档的完整形态（admin 角色组 ∪
+  [scope 门 AND 实例寻址门] 的组内 AND，实例门只约束 api key 路径）在
+  `authz/composite_gate_test.go` 用库内 kind 表达并由 RequirementDecider
+  执行；legacy 双投影的终点（策略声明与执行都在库内）已闭环。执行侧
+  迁移是 torchwood 侧的独立里程碑，语义可行性不再存疑。
 
 **B. 一次性 codemod**
 
@@ -2656,6 +2671,12 @@ srv, err := server.New(ctx, server.Config{
 任何 access/scope/role 变化都必须显式 review，不能靠测试全绿蒙混过关。
 
 ### 11.4 验收标准
+
+**v1.0 硬验收（2026-10 裁定）**：torchwood 完成执行侧迁移——legacy 双投影
+（策略声明进库、执行留项目）退役，授权执行走库 Decider。表达范式与等价性
+用例已在 `authz/composite_gate_test.go` 闭环验证，剩余为 torchwood 侧工程
+（legacyProvider 产出直接可执行的要求树 + 走路径 B 或保留 provider）。
+在此之前 v1.0 不打 tag；「能接入 ≠ 被替代」是这次裁定的依据。
 
 - [ ] Tier 0 示例 ≤ 30 行，跑通 gRPC + HTTP；HTTP 路由全部来自 proto。
 - [ ] Tier 1 示例逐包组合，所有默认值可替换。

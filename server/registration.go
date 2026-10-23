@@ -55,6 +55,10 @@ type ExtraRoute struct {
 	IsPublic bool
 	Exposure policy.Exposure
 	Label    string
+	// MaxBodyBytes 覆盖该路由的 HTTP 请求体上限（如文件上传）；0 = 使用
+	// 全局上限（Config.HTTPBodyLimitBytes，默认与 MaxRecvMsgSize 同源）。
+	// 负值启动失败。只影响本路由，不放大 proto 路由与 gRPC 消息上限。
+	MaxBodyBytes int64
 }
 
 // GET 构造 GET extra route。
@@ -126,6 +130,9 @@ func (r ExtraRoute) operation() (policy.Operation, error) {
 	}
 	if !r.IsPublic && r.Policy == nil {
 		return policy.Operation{}, fmt.Errorf("extra route %s %s: must be Public() or carry a Policy", r.Method, r.Path)
+	}
+	if r.MaxBodyBytes < 0 {
+		return policy.Operation{}, fmt.Errorf("extra route %s %s: MaxBodyBytes cannot be negative", r.Method, r.Path)
 	}
 	p := policy.Policy{Anonymous: true}
 	if r.Policy != nil {

@@ -311,6 +311,16 @@ Provider; they are not for new projects.
 
 - 0.x: minor releases may carry breaking changes. Read
   [CHANGELOG.md](./CHANGELOG.md) and the migration guide before upgrading.
+- **API freeze scope (from v0.3.0):** the public API surface consumers
+  have already adopted is frozen until v1 — the `gateway` package (all
+  public symbols), `interceptor.Stage` and its name/order constants,
+  `policy.Build` / `policy.Set`, and `authn.Options` / `authn.Chain`.
+  Breaking changes may only arrive as new types, new functions, or new
+  fields (additive-only); no renames or removals of existing symbols.
+  v0.2.1 gateway symbols removed during the v3 convergence are restored
+  as deprecated shims (`gateway/compat.go`: `IncomingMatcher`,
+  `OutgoingMatcher`, `NewErrorHandler`, `BuilderEncoder`), so upgrading
+  consumers compile again; the shims are scheduled for removal in v1.0.
 - **Minimum usable version: v0.2.0.** v0.1.0's go.mod requires an
   unpublished zero pseudo-version of `genproto` and cannot be resolved
   externally; do not reference it.
