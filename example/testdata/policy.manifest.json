@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "apis": [
+    {
+      "name": "public",
+      "operations": [
+        {
+          "id": "/example.echo.v1.EchoService/Hear",
+          "kind": "grpc",
+          "exposure": "public",
+          "label": "authenticated",
+          "policy": {
+            "require": [
+              {
+                "kind": "authenticated"
+              }
+            ]
+          }
+        },
+        {
+          "id": "/example.echo.v1.EchoService/Ping",
+          "kind": "grpc",
+          "exposure": "public",
+          "label": "public",
+          "policy": {
+            "anonymous": true
+          }
+        },
+        {
+          "id": "/example.echo.v1.EchoService/Shout",
+          "kind": "grpc",
+          "exposure": "public",
+          "label": "server",
+          "policy": {
+            "any_of": [
+              [
+                {
+                  "kind": "role",
+                  "match": "any",
+                  "values": [
+                    "admin"
+                  ]
+                }
+              ],
+              [
+                {
+                  "kind": "scope",
+                  "match": "any",
+                  "values": [
+                    "echoes:write"
+                  ]
+                }
+              ]
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

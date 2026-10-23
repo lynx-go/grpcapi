@@ -229,12 +229,39 @@ guard.Run(t, guard.SuiteConfig{
 
 ## 4. 回滚
 
-- v2.1 保留 tag；阶段 1 的 proto/代码/golden 同 PR，可单 PR revert。
+- v2 留档在 git tag `v0.2.1`（设计文档见 `docs/history/DESIGN.md`）；阶段 1 的
+  proto/代码/golden 同 PR，可单 PR revert。
 - 不做双读：v2 与 v3 扩展字段号不同，但同一二进制同时加载会依赖 `GetExtension`
   的静默行为；迁移期只允许一个 Provider 生效。
 - golden manifest 保留到 torchwood 全量切换完成后再删除。
 
-## 5. 验收清单
+## 5. 迁移完成后的一次性整形清单
+
+以下整改已裁定**推迟到 torchwood 全量迁移完成后**一次性执行（迁移前不动，
+避免迁移期叠加无关 breaking）。迁移验收通过后，按本清单逐项触发：
+
+- [ ] **Options/Config 命名统一**。现状混用：interceptor 包内
+  `RecoveryOptions`/`RequestIDOptions` 与 `ClientInfoConfig` 同包并存；
+  gateway `MuxOptions` vs `DialConfig`；guard Options 系与 Config 系并存；
+  authz 保留 `Options = InterceptorOptions` 别名。
+- [ ] **server.Config 单 stage 增删**。30+ 字段平面结构按
+  策略/传输/TLS/认证/链/mux/CSRF/docs 分组，并提供逐 Stage 的增删面。
+- [ ] **配置错误 sentinel 化**。authn 子包已有 sentinel（三份同名
+  `ErrNotFound`），server/policy/surface 侧仍是 `fmt.Errorf` 前缀字符串；
+  统一为可编程判别的错误值。
+- [ ] **`gateway.WriteError` 处置**。死 API（无消费者），注释声称被
+  authn/authz 复用与事实不符；与 `NewEncoderErrorHandler` 内部存在重复的
+  status/header/marshal 逻辑。删除或接线到 authn/authz。
+- [ ] **`ErrorWriter` 类型归一**。authn 与 authz 各自定义了形状相同的
+  `func(w, r, err)` 回调类型，运行时已由 server 注入同一 encoder——
+  归一到 gateway 单一定义。
+- [ ] **guard 旧 Swagger 断言整文件删除**（`SwaggerAccessMatches`/
+  `SwaggerSnakeCaseProperties`/`SwaggerNoDefinition` 与全局 registry 的
+  `AssertMethodCount`/`AssertServiceCoverage`），随 golden manifest 一并退场。
+- [ ] （可选）server 测试样板换用 testkit，消除与
+  `StaticAuthenticator`/`BuildPolicy` 的平行维护。
+
+## 6. 验收清单
 
 - [ ] `policy.Build` + `legacyProvider` 产出与 v2 golden 逐方法等价
 - [ ] API key scope 四形态（`*`/`all`/resource/resource.op）行为不变

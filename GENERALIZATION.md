@@ -1,12 +1,14 @@
 # grpcapi 泛化设计 v3（完整版）
 
+> **本文是设计稿与决策记录，不是 API 参考。** 落地过程中的形态调整未逐段
+> 回写；符号名、构造器签名一律以 godoc 为准，行为语义以本篇裁定为准。
+> v3 已在 v0.2.x 系列落地（见 [CHANGELOG.md](./CHANGELOG.md)）。
+>
 > 目标不是「做一个万能 API 框架」，而是做一个**分层可退让的 API 机制库**：
 >
 > - 小项目：少写代码，默认即安全。
 > - 中型产品：按需组合包，保留全部控制权。
 > - 平台型项目：能替换策略来源、决策引擎、认证方式、传输层和文档管线。
->
-> 内部试用期，不做向后兼容；当前 v2.1 打 tag 保留。
 
 ---
 
@@ -336,15 +338,15 @@ set, err := policy.Build(ctx, src, policy.Options{
 surf, err := surface.Build(files, set)
 
 chain, err := interceptor.Assemble(
-    interceptor.Recovery(interceptor.RecoveryOptions{Logger: logger}),
-    interceptor.RequestID(interceptor.RequestIDOptions{}),
-    interceptor.ClientInfo(interceptor.ClientInfoOptions{TrustedProxies: proxies}),
-    interceptor.Authn(authn.Chain{jwtAuth, apiKeyAuth}),
-    interceptor.Authz(authz.NewInterceptor(set, decider, authz.Options{})),
-    interceptor.Validate(interceptor.ValidateOptions{Validator: protovalidateValidator}),
+    interceptor.RecoveryStage(interceptor.RecoveryOptions{Logger: logger}),
+    interceptor.RequestIDStage(interceptor.RequestIDOptions{}),
+    interceptor.ClientInfoStage(interceptor.NewClientInfo(interceptor.ClientInfoConfig{TrustedProxies: proxies})),
+    interceptor.AuthnStage(jwtAuth.Unary(), jwtAuth.Stream()),
+    interceptor.AuthzStage(authorizer.Unary(), authorizer.Stream()),
+    interceptor.ValidateStage(interceptor.NewValidate()),
 )
 
-mux, err := gateway.NewMux(gateway.MuxOptions{
+mux := gateway.NewMux(gateway.MuxOptions{
     ErrorEncoder: gateway.DefaultErrorEncoder(gateway.ErrorOptions{}),
     Headers:      gateway.DefaultHeaderPolicy(),
     Marshaler:    gateway.NewMarshaler(gateway.MarshalerOptions{}), // 默认 snake_case
@@ -360,10 +362,8 @@ err = gateway.Register(ctx, mux, conn,
 )
 handler := gateway.NewHandler(gateway.HandlerOptions{
     Gateway: mux,
-    Middleware: []gateway.Middleware{
-        gateway.Recover(logger),
-        gateway.RequestID(),
-    },
+    // Middleware 是普通 net/http 中间件（[]func(http.Handler) http.Handler），
+    // 库不内置 Recover/RequestID 等 helper——gRPC 侧链已覆盖。
 })
 ```
 
@@ -801,9 +801,9 @@ type Provider interface {
 import "github.com/lynx-go/grpcapi/policy/protopolicy"
 
 policy.Options{
+    MaxSchemaVersion: 1, // 全局上限，默认 1；FileSpec 声明更高版本时构建失败
     Provider: protopolicy.New(protopolicy.Options{
         AllowUnknownFields: false, // 零值安全：默认拒绝
-        MaxSchemaVersion:   1,
     }),
 }
 ```
@@ -851,9 +851,9 @@ policy.ClaimKind("scope", "scopes", policy.MatchAny) // 默认精确匹配
 
 ```go
 scope.Kind(scope.Options{
-    VocabularyDomain: "scope",
+    VocabularyDomain:  "scope",
     RequireVocabulary: true,
-    AllowWildcard: true,
+    DisallowWildcard:  false, // 零值安全：默认允许 "*" / "all"
 })
 ```
 
@@ -1185,15 +1185,15 @@ func (c *Chain) HasStream(name string) bool // stream 侧
 内置 Stage 构造器：
 
 ```go
-interceptor.Recovery(...)
-interceptor.RequestID(...)
-interceptor.ClientInfo(...)
-interceptor.Authn(...)
-interceptor.Authz(...)
-interceptor.RateLimit(...)
-interceptor.Audit(...)
-interceptor.Usage(...)
-interceptor.Validate(...)
+interceptor.RecoveryStage(interceptor.RecoveryOptions{...})
+interceptor.RequestIDStage(interceptor.RequestIDOptions{...})
+interceptor.ClientInfoStage(interceptor.NewClientInfo(interceptor.ClientInfoConfig{...}))
+interceptor.AuthnStage(unary, stream)   // 实现由 authn 模块提供
+interceptor.AuthzStage(unary, stream)   // 通常传 authz.Interceptor 的 Unary/Stream
+interceptor.RateLimitStage(unary, stream) // 预留槽位，见下
+interceptor.AuditStage(unary, stream)     // 预留槽位，见下
+interceptor.UsageStage(unary, stream)     // 预留槽位，见下
+interceptor.ValidateStage(interceptor.NewValidate())
 ```
 
 顺序常量：
@@ -1224,21 +1224,11 @@ stream 的通用做法：
 - `usage`/`audit` 在 stream 建立与结束各结算一次；per-message 模式可选逐条事件。
 - 所有包装器必须转发 `SendMsg`/`RecvMsg`/`SetHeader`/`SetTrailer`，不要只包 Context。
 
-限流/审计/用量是常见但非核心的能力，只提供 SPI 与 no-op 默认：
-
-```go
-type Limiter interface {
-    Allow(ctx context.Context, key string, cost int) (bool, error)
-}
-type Auditor interface {
-    Record(ctx context.Context, event audit.Event) error
-}
-type Meter interface {
-    Add(ctx context.Context, event usage.Event) error
-}
-```
-
-项目可以只实现其中一个，或直接不装对应 Stage。
+限流/审计/用量是常见但非核心的能力。落地形态：**只提供带 Order 约定的
+Stage 槽位**（`RateLimitStage` / `AuditStage` / `UsageStage`，接收项目自带
+的 unary/stream 拦截器），不内置 Limiter/Auditor/Meter SPI 接口与 no-op
+默认——项目用 `StageOf` 或直接传自己的拦截器即可，避免库替项目定义
+事件模型。
 
 ### 5.12 `gateway`
 
@@ -1319,11 +1309,9 @@ type MuxOptions struct {
 // 迁移见 MIGRATION.md。）
 func NewMux(o MuxOptions) *runtime.ServeMux
 
-type Middleware = func(http.Handler) http.Handler
-
 type HandlerOptions struct {
     Gateway     *runtime.ServeMux
-    Middleware  []Middleware
+    Middleware  []func(http.Handler) http.Handler // 普通 net/http 中间件
     ExtraRoutes func(*http.ServeMux)
 }
 
@@ -1497,8 +1485,8 @@ func AssertDocuments(t testing.TB, l Loader, s *surface.Surface, o MatchOptions)
 ```go
 func AssertJSONNaming(t testing.TB, docs []Document, rule NamingRule)
 func AssertNoSchema(t testing.TB, docs []Document, banned string)
-func AssertMethodCount(t *testing.T, s *surface.Surface, api, prefix string, want int)
-func AssertServiceCoverage(t *testing.T, s *surface.Surface, api, prefix string, client any, o SDKOptions)
+func AssertSurfaceMethodCount(t testing.TB, surf *surface.Surface, api, prefix string, want int)
+func AssertSurfaceCoverage(t testing.TB, surf *surface.Surface, api, prefix string, client any, o SDKOptions)
 func RenderMatrix(set *policy.Set, o MatrixOptions) ([]byte, error)
 func AssertDocUnchanged(t *testing.T, rendered []byte, path string)
 ```
@@ -1587,7 +1575,12 @@ type Config struct {
     TLS        *tls.Config
 
     // 追加/覆盖 gRPC server 选项（凭证、keepalive 等）。
+    // 非空时内部 gateway 使用独立的 plaintext internal server，避免把
+    // grpc.Creds 等传输选项带到 bufconn。
     GRPCOptions []grpc.ServerOption
+    // InternalGRPCOptions 只用于独立 plaintext internal server
+    //（TLS 或 GRPCOptions 非空时）；不要放 grpc.Creds。
+    InternalGRPCOptions []grpc.ServerOption
     // 默认 8MiB；HTTP 侧 BodyLimit 同步使用同一上限。
     MaxRecvMsgSize int
     MaxSendMsgSize int
@@ -1596,7 +1589,10 @@ type Config struct {
     HTTPReadTimeout       time.Duration
     HTTPWriteTimeout      time.Duration
     HTTPIdleTimeout       time.Duration
-    // gateway -> gRPC 的拨号配置（TLS、bufconn、target 重写）。
+    // NetworkDial 为 true 时 gateway 走 GRPCAddr 网络回环；
+    // 默认 in-process bufconn。
+    NetworkDial bool
+    // gateway -> gRPC 的拨号配置（TLS、target 重写）。
     Dial gateway.DialConfig
 
     // gateway 注入 client-ip 与 gRPC clientinfo 共用同一份信任集。
@@ -1622,7 +1618,7 @@ type Config struct {
 
     // 原生 HTTP 路由（次要逃生口）与全局中间件。
     ExtraRoutes    []ExtraRoute
-    HTTPMiddleware []gateway.Middleware
+    HTTPMiddleware []func(http.Handler) http.Handler
 
     // 零值安全：默认开启健康检查；显式关闭才设为 true。
     DisableHealth bool
@@ -1698,13 +1694,10 @@ func BuildPolicy(t testing.TB, src policy.Source, opts policy.Options) *policy.S
 // 网络测试用：从固定测试头读取 principal，避免每个测试写一个 authenticator。
 func StaticAuthenticator(p *principal.Principal) authn.Authenticator
 func HeaderAuthenticator(header string) authn.Authenticator
-
-// 直接给 gRPC/HTTP 请求注入测试凭证。
-func WithTestCredential(ctx context.Context) context.Context
 ```
 
 `NewServer` 用 bufconn 跑 gRPC、`httptest` 跑 HTTP，并自动 `t.Cleanup`。集成测试不再手写监听/拨号/关闭。`WithPrincipal` 只对进程内直调有效；走网络时用
-`StaticAuthenticator`/`HeaderAuthenticator`。
+`StaticAuthenticator`/`HeaderAuthenticator` 注入身份。
 
 ### 5.18 从 proto Service 到 gRPC + grpc-gateway 的装配
 
@@ -1713,31 +1706,36 @@ func WithTestCredential(ctx context.Context) context.Context
 它只负责把 proto Service 自动装成 gRPC server + grpc-gateway handler。
 
 装配单元是 `server.Registration`（完整定义见 §5.16）：一个 proto Service 的
-gRPC 注册 + HTTP 注册 + descriptor。便捷构造器：
+gRPC 注册 + HTTP 注册 + descriptor。结构体字段如下（无便捷构造器，
+codegen 生成等价的工厂函数）：
 
 ```go
 package server
 
 type HTTPRegisterFunc func(context.Context, *runtime.ServeMux, grpc.ClientConnInterface) error
 
-func NewRegistration(
-    desc protoreflect.ServiceDescriptor,
-    registerGRPC func(*grpc.Server),
-    registerHTTP HTTPRegisterFunc,
-) Registration
+type Registration struct {
+    API           string // 与 proto 的 APISpec.api 一致；空 = 从策略派生
+    Name          string
+    Descriptor    protoreflect.ServiceDescriptor
+    RegisterGRPC  func(*grpc.Server)
+    RegisterHTTP  HTTPRegisterFunc
+    AllowAPIMismatch bool
+}
 ```
 
 手写适配器（约 6 行）：
 
 ```go
 func NewNoteServiceRegistration(impl NoteServiceServer) server.Registration {
-    return server.NewRegistration(
-        File_notes_proto.Services().ByName("NoteService"),
-        func(s *grpc.Server) { RegisterNoteServiceServer(s, impl) },
-        func(ctx context.Context, mux *runtime.ServeMux, conn grpc.ClientConnInterface) error {
+    return server.Registration{
+        API:        "public",
+        Descriptor: File_notes_proto.Services().ByName("NoteService"),
+        RegisterGRPC: func(s *grpc.Server) { RegisterNoteServiceServer(s, impl) },
+        RegisterHTTP: func(ctx context.Context, mux *runtime.ServeMux, conn grpc.ClientConnInterface) error {
             return RegisterNoteServiceHandlerClient(ctx, mux, NewNoteServiceClient(conn))
         },
-    )
+    }
 }
 ```
 
@@ -1820,7 +1818,7 @@ type APIConfig struct {
     Name       string
     Prefix     string // 如 "/api"、"/internal"
     Services   []Registration
-    Middleware []gateway.Middleware
+    Middleware []func(http.Handler) http.Handler
     Mux        gateway.MuxOptions
     Docs       fs.FS // 可选：挂 /docs/<name>/openapi.json
 }
@@ -1835,8 +1833,8 @@ type Config struct {
 
 - 一个 gRPC server 承载全部 service（同进程）。
 - 每个 API 面一个 gateway mux，挂在自己的前缀下。
-- 最终路径 = `APIConfig.Prefix` + `Registration.Prefix` + `google.api.http` path；
-  重复斜杠归一。
+- 最终路径 = `APIConfig.Prefix` + `google.api.http` path；重复斜杠归一。
+  （前缀只在 API 面一级，`Registration` 无自己的前缀字段。）
 - 前缀挂载必须同时处理 `URL.Path` 与 `URL.RawPath`（转义路径），不能只改
   `Path`；否则含 `%2F` 等转义段的路径会错配。
 - `server.New` 不修改调用方传入的 `*policy.Set`；extra route 的 operation 通过
@@ -1855,15 +1853,15 @@ type Config struct {
 Tier 1 仍然可以逐件组装：
 
 ```go
-mux, err := gateway.NewMux(gateway.MuxOptions{...})
+mux := gateway.NewMux(gateway.MuxOptions{...})
 conn, err := gateway.Dial(ctx, addr, gateway.DialConfig{})
 err = gateway.Register(ctx, mux, conn,
     notesv1.NewNoteServiceHTTP,
     usersv1.NewUserServiceHTTP,
 )
-handler := gateway.Handler(gateway.HandlerOptions{
+handler := gateway.NewHandler(gateway.HandlerOptions{
     Gateway: mux,
-    Middleware: []gateway.Middleware{...},
+    Middleware: []func(http.Handler) http.Handler{...},
 })
 ```
 
@@ -2036,15 +2034,15 @@ method、path、label、exposure，让「路由到底挂了什么」不再靠猜
 | 认证后增强 | `authn.Enricher` | `authn/admin`（合并 admin 角色） | 租户/组织/风控信息 |
 | CSRF | `csrf` 中间件 | double-submit cookie + SameSite | 项目自定义 token/来源校验 |
 | 流式授权粒度 | `MethodSpec.StreamAuth` | `OPEN`；按方法可设 `PER_MESSAGE` | 逐消息资源映射 |
-| 限流 | `interceptor.Limiter` | 无（no-op） | 内存/Redis/网关限流 |
-| 审计 | `interceptor.Auditor` | 无（no-op） | 落库/消息队列 |
-| 用量计量 | `interceptor.Meter` | 无（no-op） | 计费/配额 |
-| 校验器 | `interceptor.Validator` | protovalidate | 其他校验库 |
+| 限流 | `interceptor.RateLimitStage` | 无（槽位，无内置实现） | 内存/Redis/网关限流 |
+| 审计 | `interceptor.AuditStage` | 无（槽位，无内置实现） | 落库/消息队列 |
+| 用量计量 | `interceptor.UsageStage` | 无（槽位，无内置实现） | 计费/配额 |
+| 校验器 | `interceptor.NewValidate()` | protovalidate 内置 | 其他校验库 |
 | 链顺序 | `interceptor.Stage` | 内置顺序常量 | recovery/metrics/custom |
 | proto 路由装配 | `server.Registration` | `server.New` 自动装配 | gRPC 注册 + gateway 注册 + descriptor |
 | 多 API / 前缀 | `server.APIConfig` | 单 API 面 | 按前缀/API 面拆 mux |
 | 额外 HTTP 路由 | `server.ExtraRoute` | 无 | health/webhook/static 等逃生口 |
-| HTTP 中间件 | `server.HTTPMiddleware` | recovery/requestid（accesslog/CORS 按需） | 全局/API 面作用域 |
+| HTTP 中间件 | `server.HTTPMiddleware` | 无内置（body limit/CSRF/access log 由 server 自动挂） | 全局/API 面作用域 |
 | HTTP 认证/授权 | `authn.HTTPMiddleware` / `authz.HTTPMiddleware` | 仅 extra route 使用 | proto 路由由 gRPC 链授权 |
 | 路由表 | `Server.Routes()` | 从 `Surface` 派生 | 启动日志/守卫/调试 |
 | 传输层 | `gateway` 适配器（未来 Connect） | grpc-gateway | `policy/surface/guard` 不依赖传输 |
@@ -2102,7 +2100,7 @@ AND 只作用于 `require`（全部满足）与 `forbid`（恒 deny-overrides）
 - **默认 in-process 连接没有 gRPC peer IP**。gateway 必须注入可信的
   `x-grpcapi-client-ip` metadata（从 `r.RemoteAddr` 或可信代理链解析），
   `clientinfo` 优先采信；否则只能退回 XFF，存在伪造风险。
-- 若项目坚持网络回环（`Dial.InProcess=false`），gRPC peer 是 127.0.0.1/::1；
+- 若项目坚持网络回环（`Config.NetworkDial=true`），gRPC peer 是 127.0.0.1/::1；
   `clientinfo` 必须把 gateway 地址加入 trusted proxies，否则所有客户端 IP 失真。
   `server` 默认信任 `127.0.0.1/32`、`::1/128`（可关/可覆盖）。
 
@@ -2332,8 +2330,9 @@ type SDKOptions struct {
    这是长期最干净的方式。
 2. **`SkipMetadata: true`**：只做覆盖/命名/错误体检查，不检查 label。
    适合尚未接入标签注入的项目。
-3. **`guard.InjectLabels`**（可选便利函数）：在构建期把 label 写进生成的 JSON，
-   再由守卫读取。它会修改生成物，需和 `buf generate` 一起纳入 CI。
+3. **`guard.InjectLabels`**（设计中的可选便利函数，**未实现**）：在构建期把
+   label 写进生成的 JSON，再由守卫读取。它会修改生成物，需和 `buf generate`
+   一起纳入 CI。当前需要注入的项目走方案 1/2。
 
 不建议让 guard 在测试期动态“修补”文档来通过断言；那会掩盖生成管线漂移。
 
@@ -2534,9 +2533,8 @@ srv, err := server.New(ctx, server.Config{
     },
 
     Docs: docsFS,
-    HTTPMiddleware: []gateway.Middleware{
-        gateway.CORS(gateway.CORSOptions{AllowOrigins: allowedOrigins}),
-        gateway.BodyLimit(1 << 20),
+    HTTPMiddleware: []func(http.Handler) http.Handler{
+        withCORS(allowedOrigins), // 项目自带普通 net/http 中间件
     },
 })
 ```
@@ -2621,7 +2619,7 @@ srv, err := server.New(ctx, server.Config{
 | `guard.SwaggerAccessMatches` | `guard.AssertDocuments` + `OpenAPIv2` |
 | `guard.SwaggerSnakeCaseProperties` | `guard.AssertJSONNaming` |
 | `guard.SwaggerNoDefinition` | `guard.AssertNoSchema` |
-| `guard.AssertMethodCount` | `guard.AssertMethodCount(surface,...)` |
+| `guard.AssertMethodCount` | `guard.AssertSurfaceMethodCount(surf,...)` |
 | 双 module + replace | 单 module + `gen/` |
 
 ### 11.3 torchwood 两条路
@@ -2679,7 +2677,8 @@ srv, err := server.New(ctx, server.Config{
 - [ ] guard 用 `fstest.MapFS` 即可测试，OpenAPI v2 完整支持；v3 loader 接口预留。
 - [ ] 单 Go module，`go test -race ./...` 与 `buf generate` 零漂移。
 - [ ] `policy manifest` 可输出并在 CI diff。
-- [ ] 两个示例工程（public / internal）通过同一套守卫。
+- [ ] 示例工程通过同一套守卫。（当前落地 `example/`（echo）一个；
+      public/internal 分面的第二个示例未建，由 torchwood 迁移实例覆盖验证。）
 
 ---
 
@@ -2900,7 +2899,7 @@ OPA/Cerbos/SpiceDB、Connect、OpenAPI v3、审计/限流实现仍可后置。
 
 | 决策 | 结论 |
 |---|---|
-| Gateway 连接 | 进程内 bufconn 默认；`Dial.InProcess=false` + `Target/TLS` 支持网络回环 |
+| Gateway 连接 | 进程内 bufconn 默认；`Config.NetworkDial=true` + `Dial.Target/TLS` 支持网络回环 |
 | JSON 命名 | 默认 snake_case；`CamelCaseMarshaler()` 可选 |
 | 注册方式 | 强制 `RegisterXxxHandlerClient` + 拦截器；禁用 `HandlerServer` |
 | Codegen | v3.0 同步提供 `protoc-gen-grpcapi`，但手写 Registration 仍可跑 |

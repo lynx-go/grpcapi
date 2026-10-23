@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"testing"
 
 	echov1 "github.com/lynx-go/grpcapi/example/echo/v1"
@@ -58,6 +59,14 @@ func runPlugin(t *testing.T, root protoreflect.FileDescriptor, parameter string)
 	return out
 }
 
+// normalizeStamp 把生成头里的版本戳归一化：干净 tag 构建会得到真实
+// 版本号，其余环境是 dev——golden 只钉内容形态，不钉构建环境的版本。
+func normalizeStamp(s string) string {
+	return stampRE.ReplaceAllString(s, "protoc-gen-grpcapi (dev)")
+}
+
+var stampRE = regexp.MustCompile(`protoc-gen-grpcapi \([^)]*\)`)
+
 // TestGolden 钉住生成物形态：生成代码入库即活文档，任何输出变化都必须
 // 显式 review（改插件或 protogen 版本时跑 UPDATE_GOLDEN=1 重新落盘）。
 func TestGolden(t *testing.T) {
@@ -66,6 +75,7 @@ func TestGolden(t *testing.T) {
 	if !ok {
 		t.Fatalf("missing echo_grpcapi.pb.go, got files %v", keys(out))
 	}
+	content = normalizeStamp(content)
 	golden := filepath.Join("testdata", "echo_grpcapi.pb.go.golden")
 	if os.Getenv("UPDATE_GOLDEN") != "" {
 		if err := os.WriteFile(golden, []byte(content), 0o644); err != nil {
@@ -77,7 +87,7 @@ func TestGolden(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read golden (首次请 UPDATE_GOLDEN=1 go test 生成): %v", err)
 	}
-	if string(want) != content {
+	if normalizeStamp(string(want)) != content {
 		t.Fatalf("生成物与 golden 漂移：请 review 后 UPDATE_GOLDEN=1 重新落盘，或还原插件改动")
 	}
 }

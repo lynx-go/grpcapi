@@ -29,6 +29,15 @@ jobs:
             echo "::error::tag genproto/${want} 不存在：先给 genproto 打 tag，再抬主仓 require（README 版本章节）"
             exit 1
           fi
+          # tag 存在还不够：HEAD 的 genproto/ 必须与该 tag 的内容一致。
+          # 若有漂移，说明 proto 变更入库了但没走「先 tag genproto、再抬
+          # require」的发版时序，直接发布会携带与 tag 不一致的生成物。
+          if ! git diff --quiet "refs/tags/genproto/${want}" -- genproto; then
+            echo "::error::genproto/ 与 tag genproto/${want} 内容不一致："
+            git diff --stat "refs/tags/genproto/${want}" -- genproto
+            echo "先提交 proto 变更并打新的 genproto/<ver> tag、抬 go.mod require，再打主仓 tag。"
+            exit 1
+          fi
       - run: go build ./...
       - run: go vet ./...
       - run: go test -race ./...

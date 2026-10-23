@@ -27,7 +27,7 @@ jobs:
             sh -s -- -b "$(go env GOPATH)/bin" v2.15.0
       - run: golangci-lint run ./...
       - run: go test -race -coverprofile=coverage.out ./...
-      # 覆盖率门槛：当前 69%；新增代码只许抬高不许拉低（0.x 安全库基调）。
+      # 覆盖率门槛：当前 ~70%；新增代码只许抬高不许拉低（0.x 安全库基调）。
       - run: |
           total=$(go tool cover -func=coverage.out | awk '/^total/ {gsub("%","",$NF); print $NF}')
           echo "total coverage: ${total}%"

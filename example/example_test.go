@@ -10,7 +10,9 @@ import (
 	"github.com/lynx-go/grpcapi/policy"
 	"github.com/lynx-go/grpcapi/policy/protopolicy"
 	"github.com/lynx-go/grpcapi/policy/scope"
+	"github.com/lynx-go/grpcapi/surface"
 	"google.golang.org/grpc"
+	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 func buildPolicies(t *testing.T) *policy.Set {
@@ -23,6 +25,15 @@ func buildPolicies(t *testing.T) *policy.Set {
 		t.Fatalf("policy.Build: %v", err)
 	}
 	return set
+}
+
+func buildSurface(t *testing.T) *surface.Surface {
+	t.Helper()
+	surf, err := surface.Build([]protoreflect.FileDescriptor{echov1.File_echo_proto}, buildPolicies(t))
+	if err != nil {
+		t.Fatalf("surface.Build: %v", err)
+	}
+	return surf
 }
 
 // 第 3 步的等价锁：注解收集结果与契约意图一致（方法级优先、服务级回落）。
@@ -94,7 +105,15 @@ func TestScopeSatisfies(t *testing.T) {
 	}
 }
 
-// 第 6 步：守卫 helper——registry 侧（swagger 侧需项目 openapiv2 生成物）。
-func TestGuardRegistry(t *testing.T) {
-	guard.AssertMethodCount(t, "example.echo.v1", 3)
+// 第 6 步：守卫。README 推荐的 guard.Run 组合——本示例没有 OpenAPI 生成物，
+// Docs 留空跳过文档检查，用 manifest 快照锁住策略面：任何权限变化都会让
+// 快照比对失败，必须显式更新 testdata/policy.manifest.json 一并 review。
+// 有 OpenAPI 生成物的项目再补 Docs/Naming/Banned（见 guard.Run 注释）。
+func TestGuardSuite(t *testing.T) {
+	guard.Run(t, guard.SuiteConfig{
+		Surface:  buildSurface(t),
+		Manifest: &guard.ManifestConfig{Path: "testdata/policy.manifest.json"},
+	})
+	// 单条断言示例：SDK 方法数守卫（api/prefix 来自 proto 的 api 面与 go 包名）。
+	guard.AssertSurfaceMethodCount(t, buildSurface(t), "public", "example.echo.v1", 3)
 }
