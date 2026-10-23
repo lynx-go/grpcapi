@@ -1,0 +1,10 @@
+version: "2"
+linters:
+  exclusions:
+    rules:
+      # 测试文件：errcheck（断言类忽略写错的噪音）与 unused（反射驱动的
+      # fixture 类型本就不被静态引用）。非测试代码一律不豁免。
+      - path: _test\.go
+        linters:
+          - errcheck
+          - unused

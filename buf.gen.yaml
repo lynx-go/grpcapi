@@ -9,6 +9,9 @@ version: v2
 # 不要加 inputs: [directory: proto] 之类的限定——那会让 example 静默漏生成；
 # go_package 前缀即路由。
 plugins:
+  - local: bin/protoc-gen-grpcapi
+    out: .
+    opt: module=github.com/lynx-go/grpcapi
   - remote: buf.build/protocolbuffers/go:v1.36.10
     out: .
     opt: module=github.com/lynx-go/grpcapi

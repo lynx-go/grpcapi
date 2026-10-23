@@ -57,23 +57,32 @@ func AssertSurfaceCoverage(t testing.TB, surf *surface.Surface, api, prefix stri
 		methodName = func(md protoreflect.MethodDescriptor) string { return string(md.Name()) }
 	}
 	for _, svc := range services {
-		fn := fieldName(svc)
-		field, ok := ct.FieldByName(fn)
+		assertServiceWrapped(t, ct, svc, fieldName, methodName)
+	}
+}
+
+// assertServiceWrapped 是 client wrapper 反射断言的共享实现：service 在
+// client 上有 fieldName 命名的字段、其类型方法集含每个 RPC 的 methodName
+// 导出方法。registry（全局 registry 源）与 surface（Surface 源）共用。
+func assertServiceWrapped(tb testing.TB, ct reflect.Type, sd protoreflect.ServiceDescriptor,
+	fieldName func(protoreflect.ServiceDescriptor) string, methodName func(protoreflect.MethodDescriptor) string) {
+	tb.Helper()
+	fn := fieldName(sd)
+	field, ok := ct.FieldByName(fn)
+	if !ok {
+		tb.Fatalf("client 缺少 %s 的 wrapper 字段 %q", sd.FullName(), fn)
+	}
+	ms := methodSetType(field.Type)
+	methods := sd.Methods()
+	for i := 0; i < methods.Len(); i++ {
+		md := methods.Get(i)
+		name := methodName(md)
+		m, ok := ms.MethodByName(name)
 		if !ok {
-			t.Fatalf("client 缺少 %s 的 wrapper 字段 %q", svc.FullName(), fn)
+			tb.Fatalf("%s.%s 缺少同名词导出方法（新增 RPC 未补 wrapper？）", sd.FullName(), name)
 		}
-		ms := methodSetType(field.Type)
-		methods := svc.Methods()
-		for i := 0; i < methods.Len(); i++ {
-			md := methods.Get(i)
-			name := methodName(md)
-			m, ok := ms.MethodByName(name)
-			if !ok {
-				t.Fatalf("%s.%s 缺少同名词导出方法（新增 RPC 未补 wrapper？）", svc.FullName(), name)
-			}
-			if m.PkgPath != "" {
-				t.Fatalf("%s.%s 必须是导出方法", svc.FullName(), name)
-			}
+		if m.PkgPath != "" {
+			tb.Fatalf("%s.%s 必须是导出方法", sd.FullName(), name)
 		}
 	}
 }

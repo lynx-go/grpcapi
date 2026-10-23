@@ -3,6 +3,7 @@ package jwt
 import (
 	"context"
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rsa"
 	"encoding/base64"
@@ -125,7 +126,7 @@ func (j *JWKS) fetch() (map[string]any, error) {
 	if err != nil {
 		return nil, status.Error(codes.Unavailable, "jwt: fetch JWKS")
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil, status.Errorf(codes.Unavailable, "jwt: JWKS status %d", resp.StatusCode)
 	}
@@ -188,7 +189,26 @@ func (k jwk) publicKey() (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &ecdsa.PublicKey{Curve: curve, X: x, Y: y}, nil
+		size := (curve.Params().BitSize + 7) / 8
+		// SEC1 未压缩点：0x04 || X || Y（经 ecdsa.ParseUncompressedPublicKey
+		// 校验点在曲线上，避免直填坐标构造非法 key）。
+		point := make([]byte, 1+2*size)
+		point[0] = 0x04
+		x.FillBytes(point[1 : 1+size])
+		y.FillBytes(point[1+size:])
+		return ecdsa.ParseUncompressedPublicKey(curve, point)
+	case "OKP":
+		if k.Crv != "Ed25519" {
+			return nil, fmt.Errorf("unsupported OKP curve %q", k.Crv)
+		}
+		raw, err := base64.RawURLEncoding.DecodeString(k.X)
+		if err != nil {
+			return nil, err
+		}
+		if len(raw) != ed25519.PublicKeySize {
+			return nil, fmt.Errorf("invalid Ed25519 public key size %d", len(raw))
+		}
+		return ed25519.PublicKey(raw), nil
 	default:
 		return nil, fmt.Errorf("unsupported kty %q", k.Kty)
 	}

@@ -20,7 +20,21 @@ jobs:
       # 静态安全扫描：生成代码不扫（protoc-gen-go rawDesc 的 unsafe 用法）；
       # 剩余豁免一律内联 #nosec + 理由标注在具体调用点，不整规则压制。
       - run: go run github.com/securego/gosec/v2/cmd/gosec@v2.29.0 -exclude-generated -quiet ./...
-      - run: go test -race ./...
+      # golangci-lint：默认 linter 集；测试文件豁免 errcheck/unused
+      # （.golangci.yml），版本与 mise.toml 对齐。
+      - run: |
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh |
+            sh -s -- -b "$(go env GOPATH)/bin" v2.15.0
+      - run: golangci-lint run ./...
+      - run: go test -race -coverprofile=coverage.out ./...
+      # 覆盖率门槛：当前 69%；新增代码只许抬高不许拉低（0.x 安全库基调）。
+      - run: |
+          total=$(go tool cover -func=coverage.out | awk '/^total/ {gsub("%","",$NF); print $NF}')
+          echo "total coverage: ${total}%"
+          awk -v t="$total" 'BEGIN { if (t+0 < 65) exit 1 }' || {
+            echo "::error::coverage ${total}% is below the 65% gate"
+            exit 1
+          }
 
   buf:
     runs-on: ubuntu-latest
@@ -35,6 +49,8 @@ jobs:
       - uses: bufbuild/buf-setup-action@v1
       # workspace lint + 生成 + 入库生成物零漂移（proto↔genproto 同步断言，
       # DESIGN.md §8：proto 源与 genproto 必须同 PR）。
+      # 本地插件需先构建（example/echo 的 *_grpcapi.pb.go 经它生成）。
+      - run: go build -o bin/protoc-gen-grpcapi ./cmd/protoc-gen-grpcapi
       - run: buf lint
       - run: buf generate
       - run: git diff --exit-code -- genproto example

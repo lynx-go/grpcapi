@@ -4,9 +4,9 @@
 fail-closed 启动断言、认证/授权、标准拦截器链、gateway 装配件、守卫测试 helper。
 构建于 [lynx](https://github.com/lynx-go/lynx) 生态之上。
 
-> **v3 迁移中**：当前 `main` 已删除旧 `authz` 包，改用 `policy` + 新 `authz`。
-> 完整设计、决策与迁移计划见 [GENERALIZATION.md](./GENERALIZATION.md)，
-> v2 → v3 落地步骤见 [MIGRATION.md](./MIGRATION.md)。v2 设计留档见
+> **v3 已落地**（2026-10）：`policy` + 新 `authz` 已替换旧包，gateway/guard
+> 完成 v3 化。剩余迁移工作在 torchwood 侧，步骤见 [MIGRATION.md](./MIGRATION.md)。
+> 完整设计与决策见 [GENERALIZATION.md](./GENERALIZATION.md)，v2 设计留档见
 > [DESIGN.md](./DESIGN.md)。
 
 ## 核心概念
@@ -239,3 +239,7 @@ Provider 消费，不面向新项目。
 
 0.x：minor 可携带破坏性变更。v3 已删除旧 `authz` API；升级前读
 [GENERALIZATION.md](./GENERALIZATION.md) 的迁移章节。
+
+`genproto` 是独立 Go module，主仓的 `replace` 只对本仓生效：升级时必须
+**先**给 genproto 打 tag，**再**抬主仓 require 版本——漏发 tag 会让下游
+在 resolve 失败处得到隐晦的编译错误。

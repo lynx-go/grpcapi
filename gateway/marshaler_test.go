@@ -39,7 +39,7 @@ func TestNewMarshalerDelimiter(t *testing.T) {
 	if !ok {
 		t.Fatalf("NewMarshaler 应返回 *protoJSONMarshaler")
 	}
-	if string(concrete.JSONPb.Delimiter()) != "\n" {
-		t.Fatalf("流式分隔符 = %q, want \\n", concrete.JSONPb.Delimiter())
+	if string(concrete.Delimiter()) != "\n" {
+		t.Fatalf("流式分隔符 = %q, want \\n", concrete.Delimiter())
 	}
 }

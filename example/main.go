@@ -7,9 +7,6 @@ import (
 	"log"
 	"math"
 
-	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
-	"google.golang.org/grpc"
-
 	echov1 "github.com/lynx-go/grpcapi/example/echo/v1"
 	"github.com/lynx-go/grpcapi/policy"
 	"github.com/lynx-go/grpcapi/policy/protopolicy"
@@ -28,24 +25,10 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// 第 2 步：注册 Service（手写 6 行；codegen 可生成同样的 bundle）。
-	desc := echov1.File_echo_proto.Services().ByName("EchoService")
-	if desc == nil {
-		log.Fatal("EchoService descriptor missing")
-	}
+	// 第 2 步：注册 Service——由 protoc-gen-grpcapi 生成（buf.gen.yaml
+	// 的 local 插件；与手写 6 行闭包等价，见 example/echo/v1/echo_grpcapi.pb.go）。
 	impl := echoServer{}
-	registration := server.Registration{
-		API:        "public",
-		Name:       "EchoService",
-		Descriptor: desc,
-		RegisterGRPC: func(s *grpc.Server) {
-			// 必须复用 impl：TLS 时 external/internal 两个 server 会各调用一次。
-			echov1.RegisterEchoServiceServer(s, impl)
-		},
-		RegisterHTTP: func(ctx context.Context, mux *runtime.ServeMux, conn grpc.ClientConnInterface) error {
-			return echov1.RegisterEchoServiceHandlerClient(ctx, mux, echov1.NewEchoServiceClient(conn))
-		},
-	}
+	registration := echov1.NewEchoServiceRegistration(impl)
 
 	// 第 3 步：一步装配 gRPC + gateway + 默认链 + 健康检查 + 路由表。
 	// 本示例没有 authn，protected 路由会按预期返回 401；生产接入 JWT/

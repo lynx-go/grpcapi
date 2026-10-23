@@ -170,8 +170,8 @@ func TestSwaggerAccessMatchesDetectsDrift(t *testing.T) {
 	expectGuardFatal(t, "default 响应引用失真", func(st *testing.T, tb testing.TB) {
 		// 全部 operation 的 default ref 换成生成器默认的 rpcStatus：动态查找仍
 		// 命中 v1ErrorResponse 定义，ref 比对失真即红。
-		drifted := strings.Replace(positiveSwaggerJSON,
-			`"#/definitions/v1ErrorResponse"`, `"#/definitions/rpcStatus"`, -1)
+		drifted := strings.ReplaceAll(positiveSwaggerJSON,
+			`"#/definitions/v1ErrorResponse"`, `"#/definitions/rpcStatus"`)
 		if drifted == positiveSwaggerJSON {
 			st.Fatal("fixture 替换未生效")
 		}

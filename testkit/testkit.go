@@ -71,7 +71,12 @@ func NewServer(t testing.TB, cfg server.Config) *Server {
 			_ = out.grpcConn.Close()
 		}
 		select {
-		case <-done:
+		case err := <-done:
+			// Run 取消路径返回 Shutdown 的结果（nil = 优雅退出）；
+			// 非nil 说明装配体在清理时出了问题，测试必须看到。
+			if err != nil {
+				t.Errorf("testkit: server.Run after cancel: %v", err)
+			}
 		case <-time.After(10 * time.Second):
 			t.Errorf("testkit: server did not shut down")
 		}

@@ -64,7 +64,8 @@ func AssertRouteTable(t testing.TB, routes []surface.RouteInfo, o RouteTableOpti
 		}
 		key := r.Method + " " + r.Path
 		if prev, dup := seen[key]; dup {
-			if !(o.AllowShadow && prev.Source == "proto" && r.Source == "extra") {
+			shadowAllowed := o.AllowShadow && prev.Source == "proto" && r.Source == "extra"
+			if !shadowAllowed {
 				errs = append(errs, fmt.Sprintf("duplicate route %s (%s and %s)", key, prev.ID, r.ID))
 			}
 		} else {

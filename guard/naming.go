@@ -44,7 +44,10 @@ var CamelCase NamingRule = func(s string) bool {
 			}
 			continue
 		}
-		if !(ch >= 'a' && ch <= 'z') && !(ch >= 'A' && ch <= 'Z') && !(ch >= '0' && ch <= '9') {
+		isLower := ch >= 'a' && ch <= 'z'
+		isUpper := ch >= 'A' && ch <= 'Z'
+		isDigit := ch >= '0' && ch <= '9'
+		if !isLower && !isUpper && !isDigit {
 			return false
 		}
 	}

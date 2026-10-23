@@ -55,19 +55,6 @@ type SwaggerOptions struct {
 	ServiceAccess func(service string) (string, bool)
 }
 
-// swaggerOperation 是 swagger.json 中单个 HTTP operation 的最小解析结构。
-// 注意 default 响应位于 operation.responses.default（非 operation 顶层）。
-type swaggerOperation struct {
-	OperationID string `json:"operationId"`
-	Responses   struct {
-		Default struct {
-			Schema struct {
-				Ref string `json:"$ref"`
-			} `json:"schema"`
-		} `json:"default"`
-	} `json:"responses"`
-}
-
 // SwaggerAccessMatches 断言 genproto/**/*.swagger.json 的 access 扩展与
 // policy.Set 完全一致（平移自 torchwood
 // TestSwaggerAccessExtensionMatchesCollectMethodsByAccess）：
@@ -192,7 +179,7 @@ func swaggerAccessMatches(tb testing.TB, o SwaggerOptions) {
 
 			for _, ops := range doc.Paths {
 				for method, rawOp := range ops {
-					var op swaggerOperation
+					var op v2Operation // 与 openapi.go 同一最小解析结构，复用避免漂移
 					if err := json.Unmarshal(rawOp, &op); err != nil {
 						tb.Fatalf("%s %s %s 解析失败: %v", name, method, rawOp, err)
 					}
@@ -385,23 +372,6 @@ func swaggerSnakeCaseProperties(tb testing.TB, root string, subdirs []string) {
 	if root == "" || len(subdirs) == 0 {
 		tb.Fatal("SwaggerSnakeCaseProperties: root/subdirs 为空：拒绝空转")
 	}
-	snake := func(s string) bool {
-		if s == "" {
-			return true
-		}
-		for i, ch := range s {
-			if ch >= 'A' && ch <= 'Z' {
-				return false
-			}
-			if i == 0 && ch >= '0' && ch <= '9' {
-				return false
-			}
-			if ch != '_' && (ch < 'a' || ch > 'z') && (ch < '0' || ch > '9') {
-				return false
-			}
-		}
-		return true
-	}
 	var bad []string
 	files := 0
 	for _, sub := range subdirs {
@@ -432,7 +402,7 @@ func swaggerSnakeCaseProperties(tb testing.TB, root string, subdirs []string) {
 					if prop == "@type" {
 						continue
 					}
-					if !snake(prop) {
+					if !SnakeCase(prop) { // naming.go 的 NamingRule，勿再本地复制
 						bad = append(bad, e.Name()+"/"+defName+"."+prop)
 					}
 				}
@@ -469,7 +439,6 @@ func swaggerNoDefinition(tb testing.TB, root string, subdirs []string, banned st
 	var offenders []string
 	for _, sub := range subdirs {
 		dir := filepath.Join(root, sub)
-		// #nosec G122 -- guard 只遍历仓内/项目 gen 目录的可信文档，无符号链接攻击面。
 		err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
 				return err
@@ -477,7 +446,8 @@ func swaggerNoDefinition(tb testing.TB, root string, subdirs []string, banned st
 			if d.IsDir() || !strings.HasSuffix(d.Name(), ".swagger.json") {
 				return nil
 			}
-			raw, err := os.ReadFile(path) // #nosec G304 -- 测试输入路径来自项目 genproto
+			// #nosec G304,G122 -- 测试输入路径来自项目 gen 目录，无符号链接攻击面
+			raw, err := os.ReadFile(path)
 			if err != nil {
 				return err
 			}

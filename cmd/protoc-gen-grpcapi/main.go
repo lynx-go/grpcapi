@@ -27,16 +27,20 @@ const (
 )
 
 func main() {
-	protogen.Options{}.Run(func(gen *protogen.Plugin) error {
-		gen.SupportedFeatures = uint64(pluginpb.CodeGeneratorResponse_FEATURE_PROTO3_OPTIONAL)
-		for _, f := range gen.Files {
-			if !f.Generate {
-				continue
-			}
-			generateFile(gen, f)
+	protogen.Options{}.Run(generateInto)
+}
+
+// generateInto 是插件的全部逻辑（main 只负责 stdin/stdout），拆出以便
+// golden 测试直接以 CodeGeneratorRequest 驱动。
+func generateInto(gen *protogen.Plugin) error {
+	gen.SupportedFeatures = uint64(pluginpb.CodeGeneratorResponse_FEATURE_PROTO3_OPTIONAL)
+	for _, f := range gen.Files {
+		if !f.Generate {
+			continue
 		}
-		return nil
-	})
+		generateFile(gen, f)
+	}
+	return nil
 }
 
 func generateFile(gen *protogen.Plugin, file *protogen.File) {

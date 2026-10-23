@@ -3,6 +3,7 @@ package jwt_test
 import (
 	"context"
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
@@ -329,5 +330,62 @@ func TestJWKSConcurrentRefreshCoalesces(t *testing.T) {
 	}
 	if got := fetches.Load(); got != 1 {
 		t.Fatalf("JWKS fetches = %d, want 1 (concurrent refresh must coalesce)", got)
+	}
+}
+
+func TestJWKSEd25519(t *testing.T) {
+	// kty=OKP / Crv=Ed25519：解析与 EdDSA 验签。
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := jwksServer(t, []map[string]any{{
+		"kty": "OKP",
+		"kid": "ed1",
+		"crv": "Ed25519",
+		"x":   base64.RawURLEncoding.EncodeToString(pub),
+	}}, nil)
+	defer srv.Close()
+
+	token := jwtlib.NewWithClaims(jwtlib.SigningMethodEdDSA, jwtlib.MapClaims{
+		"sub": "u1",
+		"exp": time.Now().Add(time.Hour).Unix(),
+	})
+	token.Header["kid"] = "ed1"
+	signed, err := token.SignedString(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := newJWKSAuth(t, srv.URL, "EdDSA").
+		Authenticate(context.Background(), authn.Credentials{Bearer: []string{signed}})
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	if p.ID != "u1" {
+		t.Fatalf("principal = %+v", p)
+	}
+
+	// 坏曲线的 OKP key 被跳过：set 里只剩 RSA 时照常工作。
+	rsaPriv, _ := rsa.GenerateKey(rand.Reader, 2048)
+	srv2 := jwksServer(t, []map[string]any{
+		{"kty": "OKP", "kid": "bad", "crv": "P-256", "x": "aaa"},
+		{
+			"kty": "RSA",
+			"kid": "k1",
+			"n":   base64.RawURLEncoding.EncodeToString(rsaPriv.N.Bytes()),
+			"e":   base64.RawURLEncoding.EncodeToString(big.NewInt(int64(rsaPriv.E)).Bytes()),
+		},
+	}, nil)
+	defer srv2.Close()
+	rsaToken := jwtlib.NewWithClaims(jwtlib.SigningMethodRS256, jwtlib.MapClaims{
+		"sub": "u2",
+		"exp": time.Now().Add(time.Hour).Unix(),
+	})
+	rsaToken.Header["kid"] = "k1"
+	rsaSigned, _ := rsaToken.SignedString(rsaPriv)
+	p, err = newJWKSAuth(t, srv2.URL, "RS256").
+		Authenticate(context.Background(), authn.Credentials{Bearer: []string{rsaSigned}})
+	if err != nil || p.ID != "u2" {
+		t.Fatalf("Authenticate = %+v, %v (bad OKP must be skipped)", p, err)
 	}
 }

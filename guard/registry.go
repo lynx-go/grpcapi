@@ -82,6 +82,10 @@ func assertServiceCoverage(tb testing.TB, packagePrefix string, client any) {
 	}
 	ct := cv.Type()
 
+	defaultFieldName := func(sd protoreflect.ServiceDescriptor) string {
+		return lowerFirst(strings.TrimSuffix(string(sd.Name()), "Service"))
+	}
+	defaultMethodName := func(md protoreflect.MethodDescriptor) string { return string(md.Name()) }
 	found := 0
 	protoregistry.GlobalFiles.RangeFiles(func(fd protoreflect.FileDescriptor) bool {
 		svcs := fd.Services()
@@ -91,25 +95,7 @@ func assertServiceCoverage(tb testing.TB, packagePrefix string, client any) {
 				continue
 			}
 			found++
-			fieldName := lowerFirst(strings.TrimSuffix(string(svc.Name()), "Service"))
-			field, ok := ct.FieldByName(fieldName)
-			if !ok {
-				tb.Fatalf("client 缺少 %s 的 wrapper 字段 %q", svc.FullName(), fieldName)
-			}
-
-			ms := svc.Methods()
-			methodSet := methodSetType(field.Type)
-			for j := 0; j < ms.Len(); j++ {
-				name := string(ms.Get(j).Name())
-				m, ok := methodSet.MethodByName(name)
-				if !ok {
-					tb.Fatalf("%s.%s 缺少同名词导出方法（新增 RPC 未补 wrapper？）",
-						svc.FullName(), name)
-				}
-				if m.PkgPath != "" {
-					tb.Fatalf("%s.%s 必须是导出方法", svc.FullName(), name)
-				}
-			}
+			assertServiceWrapped(tb, ct, svc, defaultFieldName, defaultMethodName)
 		}
 		return true
 	})
