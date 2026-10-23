@@ -4,7 +4,7 @@
 [README](./README.md)「版本」章节。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。
 
-## [Unreleased]（将发布为 v0.3.0）
+## [v0.3.0] — 2026-10-23
 
 ### 执行侧迁移补课（torchwood §11.4 迁移实测反馈）
 
@@ -117,12 +117,12 @@
 - MIGRATION.md 新增「迁移完成后的一次性整形清单」。
 - 生成物版本戳 + `example/echo` 生成文件随插件更新。
 
-### 发版前必做（打 v0.3.0 tag 前检查）
+### 发版前必做（已于 2026-10-23 完成）
 
-1. `genproto/` 当前相对 `genproto/v0.2.0` 已有漂移：先提交 proto 变更、
-   打 `genproto/v0.3.0` tag、抬主仓 require，再打主仓 tag（release
-   workflow 已机器校验内容一致性）。
-2. torchwood 迁移验收（[MIGRATION.md](./MIGRATION.md) §6）。
+1. `genproto/v0.3.0` tag 已打、主仓 require 已抬（release workflow 机器
+   校验内容一致性）。
+2. torchwood 迁移验收通过（[MIGRATION.md](./MIGRATION.md) §6 十项全绿；
+   G-1/G-2 补课见上文，torchwood 侧证据 `docs/developer/21-grpcapi-execution-migration.md`）。
 
 ## [v0.2.1] — 2026-10-21
 
@@ -138,7 +138,8 @@
 - 首个 tag。**不可用**：go.mod 对 `genproto` 的 require 是未发布的
   零值伪版本，外部解析必失败——请从 v0.2.0 起用。
 
-[Unreleased]: https://github.com/lynx-go/grpcapi/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/lynx-go/grpcapi/compare/v0.3.0...HEAD
+[v0.3.0]: https://github.com/lynx-go/grpcapi/compare/v0.2.1...v0.3.0
 [v0.2.1]: https://github.com/lynx-go/grpcapi/compare/v0.2.0...v0.2.1
 [v0.2.0]: https://github.com/lynx-go/grpcapi/compare/v0.1.0...v0.2.0
 [v0.1.0]: https://github.com/lynx-go/grpcapi/releases/tag/v0.1.0
