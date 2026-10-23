@@ -49,26 +49,40 @@ type staticLoader []Document
 
 func (s staticLoader) Load(context.Context) ([]Document, error) { return s, nil }
 
-// Run 一次跑完配置的守卫；每个检查是独立子测试。
-func Run(t *testing.T, cfg SuiteConfig) {
-	t.Helper()
+// Run 一次跑完配置的守卫；每个检查是独立子测试。tb 收宽为 testing.TB
+// 与 guard 其余断言一致：传 *testing.T 时仍是子测试形态，传替身 TB
+// （测试里断言 Fatal）时顺序执行、失败经 TB 上报。
+func Run(tb testing.TB, cfg SuiteConfig) {
+	tb.Helper()
 	if cfg.Surface == nil {
-		t.Fatal("guard.Run: Surface 为 nil：拒绝空转")
+		tb.Fatal("guard.Run: Surface 为 nil：拒绝空转")
 	}
 	var docs []Document
 	if cfg.Docs != nil {
 		loaded, err := cfg.Docs.Load(context.Background())
 		if err != nil {
-			t.Fatalf("guard.Run: load docs: %v", err)
+			tb.Fatalf("guard.Run: load docs: %v", err)
 		}
 		docs = loaded
 	}
 	if cfg.Docs == nil && (cfg.Naming != nil || len(cfg.Banned) > 0) {
-		t.Fatal("guard.Run: Naming/Banned 检查需要 Docs")
+		tb.Fatal("guard.Run: Naming/Banned 检查需要 Docs")
+	}
+
+	sub := func(name string, fn func(testing.TB)) {
+		tb.Helper()
+		if t, ok := tb.(*testing.T); ok {
+			t.Run(name, func(st *testing.T) {
+				st.Helper()
+				fn(st)
+			})
+			return
+		}
+		fn(tb)
 	}
 
 	if cfg.Docs != nil {
-		t.Run("openapi/policy", func(t *testing.T) {
+		sub("openapi/policy", func(tb testing.TB) {
 			opts := cfg.Policy
 			if opts.MinDocuments == 0 {
 				opts.MinDocuments = cfg.MinDocuments
@@ -76,45 +90,45 @@ func Run(t *testing.T, cfg SuiteConfig) {
 			if opts.MinOperations == 0 {
 				opts.MinOperations = cfg.MinOperations
 			}
-			AssertDocuments(t, staticLoader(docs), cfg.Surface, opts)
+			AssertDocuments(tb, staticLoader(docs), cfg.Surface, opts)
 		})
 	}
 	if cfg.Naming != nil {
-		t.Run("openapi/naming", func(t *testing.T) {
-			AssertJSONNaming(t, docs, cfg.Naming)
+		sub("openapi/naming", func(tb testing.TB) {
+			AssertJSONNaming(tb, docs, cfg.Naming)
 		})
 	}
 	if len(cfg.Banned) > 0 {
-		t.Run("openapi/banned", func(t *testing.T) {
+		sub("openapi/banned", func(tb testing.TB) {
 			for _, banned := range cfg.Banned {
-				AssertNoSchema(t, docs, banned)
+				AssertNoSchema(tb, docs, banned)
 			}
 		})
 	}
 	if cfg.SDK != nil {
-		t.Run("sdk/coverage", func(t *testing.T) {
-			AssertSurfaceCoverage(t, cfg.Surface, cfg.SDK.API, cfg.SDK.Prefix, cfg.SDK.Client, cfg.SDK.Options)
+		sub("sdk/coverage", func(tb testing.TB) {
+			AssertSurfaceCoverage(tb, cfg.Surface, cfg.SDK.API, cfg.SDK.Prefix, cfg.SDK.Client, cfg.SDK.Options)
 			if cfg.SDK.WantMethods > 0 {
-				AssertSurfaceMethodCount(t, cfg.Surface, cfg.SDK.API, cfg.SDK.Prefix, cfg.SDK.WantMethods)
+				AssertSurfaceMethodCount(tb, cfg.Surface, cfg.SDK.API, cfg.SDK.Prefix, cfg.SDK.WantMethods)
 			}
 		})
 	}
 	if cfg.Manifest != nil {
-		t.Run("manifest/snapshot", func(t *testing.T) {
+		sub("manifest/snapshot", func(tb testing.TB) {
 			data, err := cfg.Surface.Policy().Manifest().JSON()
 			if err != nil {
-				t.Fatalf("manifest JSON: %v", err)
+				tb.Fatalf("manifest JSON: %v", err)
 			}
-			AssertDocUnchanged(t, data, cfg.Manifest.Path)
+			assertDocUnchanged(tb, data, cfg.Manifest.Path)
 		})
 	}
 	if cfg.Matrix != nil {
-		t.Run("matrix/snapshot", func(t *testing.T) {
+		sub("matrix/snapshot", func(tb testing.TB) {
 			rendered, err := RenderMatrix(cfg.Surface.Policy(), cfg.Matrix.Options)
 			if err != nil {
-				t.Fatalf("RenderMatrix: %v", err)
+				tb.Fatalf("RenderMatrix: %v", err)
 			}
-			AssertDocUnchanged(t, rendered, cfg.Matrix.Path)
+			assertDocUnchanged(tb, rendered, cfg.Matrix.Path)
 		})
 	}
 }
