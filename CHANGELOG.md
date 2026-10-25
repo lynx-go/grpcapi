@@ -4,6 +4,26 @@
 [README](./README.md)「版本」章节。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### OpenAPI 文档生成（`openapi` 包 + server 免费挂载）
+
+- **新增 `openapi` 包**：surface IR（proto + google.api.http + policy.Set）
+  → OpenAPI 3.0.3。路由取最终部署路径（含 API 组前缀）；安全语义来自
+  policy——`anonymous` 方法显式 `security: []`（不继承全局），其余标注
+  `bearerAuth`；策略谓词（require/any_of/forbid）以
+  `x-grpcapi-requirements` 扩展原样保留。schema 由消息描述符递归生成
+  （protojson 对齐：`json_name`、枚举取名字、map→`additionalProperties`、
+  递归经 `components/schemas` `$ref` 断环、知名类型映射 Timestamp/Duration/
+  Struct/Value/wrappers/Empty/Any）；GET/DELETE 的非路径字段按 grpc-gateway
+  语义映射为 query 参数，`body: "*"`/`body: <field>` 映射为 requestBody，
+  路径模板变量定位为 path 参数。API：`openapi.Build(surf, routes, info,
+  extraPolicies)` + `openapi.Handler(doc)`（自定义落点用）。
+- **server 集成**：`Config.OpenAPI *openapi.Info` 非 nil 时启动期生成并免费
+  挂 `GET /openapi.json`（与 `/docs/` 同等待遇：匿名静态文档、带 body
+  limit、不进策略链；DisableHTTP 组合校验同步收紧）。extra 路由的策略由
+  server 侧注入，策略不可知时保守声明需认证。
+
 ## [v0.3.0] — 2026-10-23
 
 ### 执行侧迁移补课（torchwood §11.4 迁移实测反馈）

@@ -20,6 +20,7 @@ import (
 	"github.com/lynx-go/grpcapi/csrf"
 	"github.com/lynx-go/grpcapi/gateway"
 	"github.com/lynx-go/grpcapi/interceptor"
+	"github.com/lynx-go/grpcapi/openapi"
 	"github.com/lynx-go/grpcapi/policy"
 	"github.com/lynx-go/grpcapi/policy/protopolicy"
 	"github.com/lynx-go/grpcapi/surface"
@@ -101,6 +102,11 @@ type Config struct {
 	AccessLog     bool
 	Reflection    bool
 	Docs          fs.FS
+	// OpenAPI 非 nil 时免费挂 GET /openapi.json：文档由 surface（proto +
+	// google.api.http + policy）在启动期生成——路由为最终部署路径（含 API
+	// 组前缀），anonymous 方法不带 security，策略谓词以 x-grpcapi-requirements
+	// 保留。需要自定义落点时用 openapi.Build + openapi.Handler 自行组装。
+	OpenAPI *openapi.Info
 
 	Logger          *slog.Logger
 	ShutdownTimeout time.Duration
@@ -167,8 +173,8 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 		// gateway 与 gRPC 同机时，回环地址就是可信代理。
 		cfg.TrustedProxies = []string{"127.0.0.1/32", "::1/128"}
 	}
-	if cfg.DisableHTTP && (len(cfg.ExtraRoutes) > 0 || cfg.Docs != nil || len(cfg.APIs) > 0 || len(cfg.HTTPMiddleware) > 0 || cfg.CSRF != nil || cfg.CORS != nil) {
-		return nil, fmt.Errorf("server: DisableHTTP cannot be combined with extra routes/docs/API configs/HTTP middleware/CSRF/CORS")
+	if cfg.DisableHTTP && (len(cfg.ExtraRoutes) > 0 || cfg.Docs != nil || cfg.OpenAPI != nil || len(cfg.APIs) > 0 || len(cfg.HTTPMiddleware) > 0 || cfg.CSRF != nil || cfg.CORS != nil) {
+		return nil, fmt.Errorf("server: DisableHTTP cannot be combined with extra routes/docs/openapi/API configs/HTTP middleware/CSRF/CORS")
 	}
 
 	regs := allRegistrations(cfg)
@@ -561,6 +567,26 @@ func (s *Server) buildHTTP(ctx context.Context, set *policy.Set, surf *surface.S
 		}
 		return routes[i].Method < routes[j].Method
 	})
+
+	// OpenAPI 文档挂在最终路由表计算之后：路径含 API 组前缀，策略取自
+	// extraOps；匿名静态文档（与 /docs/ 同等待遇，不进策略链）。
+	if s.cfg.OpenAPI != nil {
+		extraPolicies := make(map[string]policy.Policy, len(extraOps))
+		for _, op := range extraOps {
+			extraPolicies[op.ID] = op.Policy
+		}
+		doc, err := openapi.Build(surf, routes, *s.cfg.OpenAPI, extraPolicies)
+		if err != nil {
+			return nil, nil, fmt.Errorf("server: openapi: %w", err)
+		}
+		docHandler, err := openapi.Handler(doc)
+		if err != nil {
+			return nil, nil, fmt.Errorf("server: openapi: %w", err)
+		}
+		if err := safeHandle(root, "GET /openapi.json", withBodyLimit(docHandler, bodyLimit)); err != nil {
+			return nil, nil, err
+		}
+	}
 
 	s.httpServer = &http.Server{
 		Handler:           h,

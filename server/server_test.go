@@ -14,6 +14,7 @@ import (
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/lynx-go/grpcapi/example/echo/v1"
 	"github.com/lynx-go/grpcapi/interceptor"
+	"github.com/lynx-go/grpcapi/openapi"
 	"github.com/lynx-go/grpcapi/policy"
 	"github.com/lynx-go/grpcapi/policy/protopolicy"
 	"github.com/lynx-go/grpcapi/server"
@@ -586,5 +587,77 @@ func TestServerHTTPHandlerThenRunNoDoubleStart(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != 200 || !strings.Contains(string(body), "pong") {
 		t.Fatalf("ping status=%d body=%s", resp.StatusCode, body)
+	}
+}
+
+func TestServerServesOpenAPIDoc(t *testing.T) {
+	s, err := server.New(context.Background(), server.Config{
+		Policy:               testSet(t),
+		Services:             []server.Registration{testRegistration(t)},
+		GRPCAddr:             "127.0.0.1:0",
+		HTTPAddr:             "127.0.0.1:0",
+		DisableHealth:        true,
+		AllowNoAuthenticator: true,
+		OpenAPI:              &openapi.Info{Title: "echo test", Version: "v1"},
+	})
+	if err != nil {
+		t.Fatalf("server.New: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() { errCh <- s.Run(ctx) }()
+
+	var httpAddr string
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		_, httpAddr = s.Addrs()
+		if httpAddr != "" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if httpAddr == "" {
+		cancel()
+		t.Fatal("server did not start")
+	}
+
+	resp, err := http.Get("http://" + httpAddr + "/openapi.json")
+	if err != nil {
+		cancel()
+		t.Fatalf("GET openapi.json: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		cancel()
+		t.Fatalf("openapi.json status=%d body=%s", resp.StatusCode, body)
+	}
+	doc := string(body)
+	for _, want := range []string{
+		`"echo test"`,
+		`"/v1/echo:ping"`,
+		`"/v1/echo:shout"`,
+		`"bearerAuth"`,
+		`"example.echo.v1.ShoutRequest"`,
+	} {
+		if !strings.Contains(doc, want) {
+			cancel()
+			t.Errorf("openapi.json missing %s", want)
+		}
+	}
+	// 文档匿名可取（与 /docs/ 同等待遇），不经认证链。
+	if resp.Header.Get("Content-Type") != "application/json" {
+		cancel()
+		t.Errorf("content-type = %q", resp.Header.Get("Content-Type"))
+	}
+
+	cancel()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("server did not shut down")
 	}
 }
