@@ -4,7 +4,7 @@
 [README](./README.md)「版本」章节。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。
 
-## [Unreleased]
+## [v0.4.0] — 2026-10-25
 
 ### OpenAPI 文档生成（`openapi` 包 + server 免费挂载）
 
